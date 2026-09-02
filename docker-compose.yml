@@ -1,0 +1,47 @@
+# Local dev orchestration for Coal-Intel (db + backend + frontend).
+# Usage: docker compose up --build
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: coal_intel_app
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: coal_intel
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coal_intel_app -d coal_intel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://coal_intel_app:devpassword@db:5432/coal_intel
+      CORS_ORIGINS: http://localhost:3000
+      STORAGE_DIR: /app/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/storage
+
+  frontend:
+    build: .
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+  storage_data:

@@ -40,26 +40,23 @@ function LoginInner() {
 
   const isExecutive = role === "EXECUTIVE";
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    // Simulated federated/credential authentication.
-    setTimeout(() => {
-      if (isExecutive) {
-        login({ ...MOCK_EXECUTIVE_USER, name: name || MOCK_EXECUTIVE_USER.name });
-        setActivePortal("EXECUTIVE");
-        router.push("/executive");
-      } else {
-        login({
-          ...MOCK_SUBSIDIARY_USER,
-          name: name || MOCK_SUBSIDIARY_USER.name,
-          subsidiary,
-          coalfield,
-        });
-        setActivePortal("INGESTION");
-        router.push("/ingestion");
-      }
-    }, 650);
+    try {
+      await login({
+        role,
+        name: name || undefined,
+        email: isExecutive ? "a.bhattacharya@cil.co.in" : undefined,
+        password: isExecutive ? "Demo@1234" : undefined,
+        subsidiary: isExecutive ? undefined : subsidiary,
+        coalfield: isExecutive ? undefined : coalfield,
+      });
+      setActivePortal(isExecutive ? "EXECUTIVE" : "INGESTION");
+      router.push(isExecutive ? "/executive" : "/ingestion");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (

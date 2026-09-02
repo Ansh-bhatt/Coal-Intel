@@ -3,11 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, CornerDownLeft, Sparkles } from "lucide-react";
 import ResponseCard from "./ResponseCard";
-import {
-  MOCK_ASSISTANT_RESPONSE,
-  SUGGESTED_PROMPTS,
-} from "@/lib/mockData";
+import { SUGGESTED_PROMPTS } from "@/lib/mockData";
 import { uid } from "@/lib/utils";
+import { streamChat, type CitationDto, type ChatRequest } from "@/lib/api";
+import { usePortalStore } from "@/store/portalStore";
 import type { ChatMessage } from "@/lib/types";
 
 const GREETING: ChatMessage = {
@@ -22,67 +21,90 @@ export default function ChatInterface() {
   const [messages, setMessages] = useState<ChatMessage[]>([GREETING]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [sessionId, setSessionId] = useState<string | undefined>();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const timers = useRef<number[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const setActiveChatSessionId = usePortalStore((s) => s.setActiveChatSessionId);
 
   useEffect(() => {
     const node = scrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
   }, [messages]);
 
+  // Cleanup in-flight stream on unmount.
   useEffect(() => {
-    return () => timers.current.forEach((t) => window.clearTimeout(t));
+    return () => abortRef.current?.abort();
   }, []);
 
-  const streamResponse = useCallback((userContent: string) => {
-    const assistantId = uid("msg");
-    setMessages((prev) => [
-      ...prev,
-      { id: assistantId, role: "assistant", content: "", timestamp: Date.now() },
-    ]);
-    setStreaming(true);
+  const send = useCallback(
+    async (raw: string) => {
+      const text = raw.trim();
+      if (!text || streaming) return;
 
-    const full = MOCK_ASSISTANT_RESPONSE.content;
-    const words = full.split(/(?<=\s)/);
-    let index = 0;
-    // Stream a word at a time for a natural conversational cadence.
-    const push = () => {
-      index += 1;
-      const chunk = words.slice(0, index).join("");
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: chunk, timestamp: Date.now() }
-            : m,
-        ),
-      );
-      if (index >= words.length) {
-        // Attach citations once streaming completes.
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId
-              ? { ...m, citations: MOCK_ASSISTANT_RESPONSE.citations }
-              : m,
-          ),
+      setMessages((prev) => [
+        ...prev,
+        { id: uid("msg"), role: "user", content: text, timestamp: Date.now() },
+      ]);
+      setInput("");
+
+      const assistantId = uid("msg");
+      setMessages((prev) => [
+        ...prev,
+        { id: assistantId, role: "assistant", content: "", timestamp: Date.now() },
+      ]);
+      setStreaming(true);
+
+      const payload: ChatRequest = { message: text, session_id: sessionId };
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+
+      try {
+        await streamChat(
+          payload,
+          {
+            onToken: (token) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, content: m.content + token, timestamp: Date.now() }
+                    : m,
+                ),
+              );
+            },
+            onCitations: (citations: CitationDto[]) => {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        citations: citations.map((c) => ({
+                          id: c.id,
+                          documentName: c.documentName,
+                          pageNumber: c.pageNumber,
+                          boundingBox: c.boundingBox,
+                        })),
+                      }
+                    : m,
+                ),
+              );
+            },
+            onDone: (messageId: string, streamSessionId?: string) => {
+              setStreaming(false);
+              const next = sessionId ?? streamSessionId ?? messageId;
+              setSessionId(next);
+              setActiveChatSessionId(next);
+            },
+            onError: () => setStreaming(false),
+          },
+          ctrl.signal,
         );
+      } catch {
+        // Keep the UI demoable if the stream fails.
         setStreaming(false);
-      } else {
-        timers.current.push(window.setTimeout(push, 24 + Math.random() * 22));
       }
-    };
-    timers.current.push(window.setTimeout(push, 500));
-  }, []);
-
-  const send = (raw: string) => {
-    const text = raw.trim();
-    if (!text || streaming) return;
-    setMessages((prev) => [
-      ...prev,
-      { id: uid("msg"), role: "user", content: text, timestamp: Date.now() },
-    ]);
-    setInput("");
-    streamResponse(text);
-  };
+    },
+    [streaming, sessionId],
+  );
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-black/10 bg-white/70 backdrop-blur-sm">
