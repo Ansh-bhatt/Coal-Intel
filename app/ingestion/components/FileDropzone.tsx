@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
 import { cn, formatBytes } from "@/lib/utils";
+import { uploadDocument } from "@/lib/api";
 import type { UploadedFileEntry } from "@/lib/types";
 
 const ACCEPT = {
@@ -27,12 +28,30 @@ export default function FileDropzone() {
   const uploadedFiles = usePortalStore((s) => s.uploadedFiles);
   const addFiles = usePortalStore((s) => s.addFiles);
   const removeFile = usePortalStore((s) => s.removeFile);
+  const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
+  const setFileDocumentId = usePortalStore((s) => s.setFileDocumentId);
 
   const onDrop = useCallback(
-    (accepted: File[]) => {
-      if (accepted.length > 0) addFiles(accepted);
+    async (accepted: File[]) => {
+      if (accepted.length === 0) return;
+      // Add files to the store immediately (optimistic UI).
+      addFiles(accepted);
+      // Upload each file to the backend.
+      for (const file of accepted) {
+        // Read the fresh store state to find the newly added entry.
+        const entry = usePortalStore.getState().uploadedFiles.find((f) => f.name === file.name);
+        if (!entry) continue;
+        try {
+          const result = await uploadDocument(file);
+          // Update the entry with the backend document ID + verified status.
+          setFileDocumentId(entry.id, result.document_id);
+          updateFileStatus(entry.id, "verified");
+        } catch {
+          updateFileStatus(entry.id, "error");
+        }
+      }
     },
-    [addFiles],
+    [addFiles, setFileDocumentId, updateFileStatus],
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } =
