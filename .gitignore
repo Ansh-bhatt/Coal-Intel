@@ -31,12 +31,3 @@ next-env.d.ts
 
 # vercel
 .vercel
-
-# backend
-backend/.venv/
-backend/__pycache__/
-backend/storage/
-backend/*.egg-info/
-backend/.pytest_cache/
-backend/alembic/__pycache__/
-

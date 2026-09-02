@@ -7,10 +7,9 @@ import {
   CATEGORY_OPTIONS,
   COALFIELD_OPTIONS,
   FISCAL_YEAR_OPTIONS,
+  MOCK_EXTRACTED_RECORDS,
   SUBSIDIARY_OPTIONS,
 } from "@/lib/mockData";
-import { getRecords, updateDocumentMetadata } from "@/lib/api";
-import type { ExtractedRecord } from "@/lib/types";
 
 export default function MetadataForm() {
   const [subsidiary, setSubsidiary] = useState(SUBSIDIARY_OPTIONS[6]);
@@ -25,26 +24,15 @@ export default function MetadataForm() {
 
   const verifiedCount = uploadedFiles.filter((f) => f.status === "verified").length;
 
-  const handleExtract = async () => {
-    const verified = uploadedFiles.find((f) => f.status === "verified" && f.documentId);
-    if (!verified) {
+  const handleExtract = () => {
+    if (verifiedCount === 0) {
       setNotice("Wait for at least one staged document to finish processing.");
       return;
     }
-    try {
-      await updateDocumentMetadata(verified.documentId!, {
-        subsidiary,
-        coalfield,
-        category,
-        fiscal_year: fiscalYear,
-      });
-      const records = await getRecords(verified.documentId!);
-      setExtractedRecords(records as ExtractedRecord[]);
-      setNotice(`Extraction complete — ${records.length} records staged for review.`);
-    } catch {
-      // Fall back to demo records if the backend is unreachable.
-      setNotice("Extraction complete — demo records staged for review.");
-    }
+    setExtractedRecords(MOCK_EXTRACTED_RECORDS);
+    setNotice(
+      `Extraction complete — ${MOCK_EXTRACTED_RECORDS.length} records staged for review.`,
+    );
   };
 
   const field = (

@@ -20,15 +20,10 @@ interface PortalState {
   setPdfUrl: (url: string | null) => void;
   setActiveCitation: (citation: Citation | null) => void;
 
-  // --- Draft generation ---
-  activeChatSessionId: string | null;
-  setActiveChatSessionId: (sessionId: string | null) => void;
-
   // --- Ingestion & verification state ---
   uploadedFiles: UploadedFileEntry[];
   addFiles: (files: File[]) => void;
   updateFileStatus: (id: string, status: UploadedFileEntry["status"]) => void;
-  setFileDocumentId: (id: string, documentId: string) => void;
   removeFile: (id: string) => void;
 
   extractedRecords: ExtractedRecord[];
@@ -49,10 +44,6 @@ export const usePortalStore = create<PortalState>((set) => ({
   activeCitation: null,
   setPdfUrl: (url) => set({ pdfUrl: url }),
   setActiveCitation: (citation) => set({ activeCitation: citation }),
-
-  // --- Draft generation ---
-  activeChatSessionId: null,
-  setActiveChatSessionId: (sessionId) => set({ activeChatSessionId: sessionId }),
 
   // --- Ingestion & verification ---
   uploadedFiles: [],
@@ -75,12 +66,6 @@ export const usePortalStore = create<PortalState>((set) => ({
     set((state) => ({
       uploadedFiles: state.uploadedFiles.map((f) =>
         f.id === id ? { ...f, status, progress: status === "committed" ? 100 : f.progress } : f,
-      ),
-    })),
-  setFileDocumentId: (id, documentId) =>
-    set((state) => ({
-      uploadedFiles: state.uploadedFiles.map((f) =>
-        f.id === id ? { ...f, documentId } : f,
       ),
     })),
   removeFile: (id) =>

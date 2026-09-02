@@ -4,15 +4,13 @@ import { CheckCircle2, Upload } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
 import { LOW_CONFIDENCE_THRESHOLD } from "@/store/portalStore";
 import { cn } from "@/lib/utils";
-import { commitDocument, getRecords, updateRecord } from "@/lib/api";
 import type { ExtractedRecord } from "@/lib/types";
 
 const THRESHOLD = 0.85;
 
 export default function VerificationGrid() {
   const records = usePortalStore((s) => s.extractedRecords);
-  const uploadedFiles = usePortalStore((s) => s.uploadedFiles);
-  const updateLocalRecord = usePortalStore((s) => s.updateRecord);
+  const updateRecord = usePortalStore((s) => s.updateRecord);
   const markAllVerified = usePortalStore((s) => s.markAllVerified);
 
   const verifiedCount = records.filter((r) => r.status === "verified" || r.status === "corrected").length;
@@ -21,28 +19,6 @@ export default function VerificationGrid() {
       ? (records.reduce((a, r) => a + r.confidence, 0) / records.length * 100).toFixed(1)
       : "—";
   const allVerified = records.length > 0 && verifiedCount === records.length;
-
-  const handleLocalUpdate = (id: string, patch: Partial<ExtractedRecord>) => {
-    updateLocalRecord(id, patch);
-    // Persist corrections to the backend when a value changes.
-    if (patch.value !== undefined) {
-      updateRecord(id, patch.value).catch(() => {
-        /* keep local state if the backend is unreachable */
-      });
-    }
-  };
-
-  const handleCommit = async () => {
-    markAllVerified();
-    const doc = uploadedFiles.find((f) => f.documentId && f.status === "verified");
-    if (doc?.documentId) {
-      try {
-        await commitDocument(doc.documentId);
-      } catch {
-        /* demoable offline */
-      }
-    }
-  };
 
   if (records.length === 0) {
     return (
@@ -89,7 +65,7 @@ export default function VerificationGrid() {
       {/* Rows */}
       <div className="flex-1 space-y-1 overflow-y-auto">
         {records.map((r) => (
-          <RecordRow key={r.id} record={r} onUpdate={handleLocalUpdate} />
+          <RecordRow key={r.id} record={r} onUpdate={updateRecord} />
         ))}
       </div>
 
@@ -105,7 +81,7 @@ export default function VerificationGrid() {
           {verifiedCount} of {records.length} records verified
         </div>
         <button
-          onClick={handleCommit}
+          onClick={markAllVerified}
           disabled={allVerified}
           className="btn-pill !px-4 !py-2 !text-xs"
         >

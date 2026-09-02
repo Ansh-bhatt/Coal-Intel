@@ -68,7 +68,6 @@ export interface UploadedFileEntry {
   type: string;
   status: FileStatus;
   progress: number;
-  documentId?: string;
 }
 
 export interface IngestionMetadata {
