@@ -128,3 +128,4 @@ docker run -p 8000:8000 --env-file .env coal-intel-backend
 - **SSE Chat**: The chat endpoint streams tokens via Server-Sent Events, consumed by the frontend's `fetch` + `ReadableStream` reader.
 - **Row-level RBAC**: `SUBSIDIARY` users can only see/upload documents for their own subsidiary.
 # Coal-Intel-With-Backend
+# Coal-Intel-With-Backend
