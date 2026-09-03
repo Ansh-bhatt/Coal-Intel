@@ -29,6 +29,7 @@ interface PortalState {
   addFiles: (files: File[]) => void;
   updateFileStatus: (id: string, status: UploadedFileEntry["status"]) => void;
   setFileDocumentId: (id: string, documentId: string) => void;
+  setFileError: (id: string, message: string) => void;
   removeFile: (id: string) => void;
 
   extractedRecords: ExtractedRecord[];
@@ -81,6 +82,12 @@ export const usePortalStore = create<PortalState>((set) => ({
     set((state) => ({
       uploadedFiles: state.uploadedFiles.map((f) =>
         f.id === id ? { ...f, documentId } : f,
+      ),
+    })),
+  setFileError: (id, message) =>
+    set((state) => ({
+      uploadedFiles: state.uploadedFiles.map((f) =>
+        f.id === id ? { ...f, errorMessage: message } : f,
       ),
     })),
   removeFile: (id) =>

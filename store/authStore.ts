@@ -50,40 +50,31 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   login: async (params) => {
-    const email = params.email ?? "a.bhattacharya@cil.co.in";
+    const isExecutive = params.role === "EXECUTIVE";
+    const email = params.email ?? (isExecutive ? "a.bhattacharya@cil.co.in" : "r.verma@mcl.co.in");
     const password = params.password ?? "Demo@1234";
 
-    if (params.role === "EXECUTIVE") {
-      try {
-        const token = await apiLogin(email, password);
-        setAccessToken(token.access_token);
-        const user = userFromToken(token);
-        window.localStorage.setItem("coal_intel_session", JSON.stringify({ user }));
-        set({ user, isAuthenticated: true });
-        return;
-      } catch {
-        // Backend unreachable → demo executive session (demoable offline).
-        const demo: SessionUser = {
-          name: params.name || "A. Bhattacharya",
-          role: "EXECUTIVE",
-          email,
-        };
-        window.localStorage.setItem("coal_intel_session", JSON.stringify({ user: demo }));
-        set({ user: demo, isAuthenticated: true });
-      }
-      return;
+    try {
+      const token = await apiLogin(email, password);
+      setAccessToken(token.access_token);
+      const user = userFromToken(token);
+      window.localStorage.setItem("coal_intel_session", JSON.stringify({ user }));
+      set({ user, isAuthenticated: true });
+    } catch {
+      // Backend unreachable → demo session (demoable offline).
+      // Apply the same fallback behaviour symmetrically to both roles.
+      const demo: SessionUser = isExecutive
+        ? { name: params.name || "A. Bhattacharya", role: "EXECUTIVE", email }
+        : {
+            name: params.name || "R. Verma",
+            role: "SUBSIDIARY",
+            subsidiary: params.subsidiary || "Mahanadi Coalfields Ltd",
+            coalfield: params.coalfield || "Talcher Coalfield",
+            email,
+          };
+      window.localStorage.setItem("coal_intel_session", JSON.stringify({ user: demo }));
+      set({ user: demo, isAuthenticated: true });
     }
-
-    // SUBSIDIARY role — field operative, backed by the seeded demo user.
-    const demo: SessionUser = {
-      name: params.name || "R. Verma",
-      role: "SUBSIDIARY",
-      subsidiary: params.subsidiary || "Mahanadi Coalfields Ltd",
-      coalfield: params.coalfield || "Talcher Coalfield",
-      email: params.email || "r.verma@mcl.co.in",
-    };
-    window.localStorage.setItem("coal_intel_session", JSON.stringify({ user: demo }));
-    set({ user: demo, isAuthenticated: true });
   },
 
   logout: () => {

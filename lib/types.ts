@@ -3,7 +3,7 @@
  * These mirror the state contracts described in Architecture.md.
  */
 
-export type PortalMode = "EXECUTIVE" | "INGESTION";
+export type PortalMode = "EXECUTIVE" | "INGESTION" | "ANALYTICS";
 
 export type UserRole = "EXECUTIVE" | "SUBSIDIARY";
 
@@ -69,6 +69,9 @@ export interface UploadedFileEntry {
   status: FileStatus;
   progress: number;
   documentId?: string;
+  /** Human-readable error message from the last failed upload attempt
+   *  (e.g. "Upload failed (HTTP 401): Not authenticated"). */
+  errorMessage?: string;
 }
 
 export interface IngestionMetadata {

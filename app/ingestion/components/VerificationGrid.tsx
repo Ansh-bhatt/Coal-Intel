@@ -26,7 +26,8 @@ export default function VerificationGrid() {
     updateLocalRecord(id, patch);
     // Persist corrections to the backend when a value changes.
     if (patch.value !== undefined) {
-      updateRecord(id, patch.value).catch(() => {
+      updateRecord(id, patch.value).catch((err) => {
+        console.error("Failed to persist record correction:", err);
         /* keep local state if the backend is unreachable */
       });
     }
@@ -38,7 +39,8 @@ export default function VerificationGrid() {
     if (doc?.documentId) {
       try {
         await commitDocument(doc.documentId);
-      } catch {
+      } catch (err) {
+        console.error("Failed to commit batch:", err);
         /* demoable offline */
       }
     }

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import {
   Activity,
   ArrowRight,
+  BarChart3,
   Database,
   FileSearch,
   Radio,
@@ -145,7 +146,7 @@ export default function LandingPage() {
             <span className="h-px flex-1 bg-black/10" />
           </div>
 
-          <div className="grid gap-5 md:grid-cols-2">
+          <div className="grid gap-5 md:grid-cols-3">
             {/* Executive card */}
             <Link
               href="/login?portal=executive"
@@ -200,6 +201,37 @@ export default function LandingPage() {
               <div className="mt-auto flex items-center justify-between border-t border-black/10 pt-4">
                 <span className="font-mono text-[11px] uppercase tracking-wider text-ink/50">
                   Upload → Extract → Verify
+                </span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 text-ink transition-all group-hover:bg-ink group-hover:text-white">
+                  <ArrowRight className="h-4 w-4" />
+                </span>
+              </div>
+            </Link>
+
+            {/* Analytics card */}
+            <Link
+              href="/login?portal=executive"
+              className="group card-editorial flex flex-col gap-4 p-6 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-lift"
+            >
+              <div className="flex items-start justify-between">
+                <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-black/10 bg-ink text-white">
+                  <BarChart3 className="h-5 w-5" />
+                </span>
+                <span className="engine-tag">PORTAL · 03</span>
+              </div>
+              <div>
+                <h3 className="font-display text-xl font-semibold tracking-tight">
+                  Analytics Dashboard
+                </h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink/65">
+                  Track ingestion volume, extraction accuracy and verified
+                  citations across CIL subsidiaries in a single operational
+                  overview.
+                </p>
+              </div>
+              <div className="mt-auto flex items-center justify-between border-t border-black/10 pt-4">
+                <span className="font-mono text-[11px] uppercase tracking-wider text-ink/50">
+                  Track → Analyse → Report
                 </span>
                 <span className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 text-ink transition-all group-hover:bg-ink group-hover:text-white">
                   <ArrowRight className="h-4 w-4" />

@@ -41,7 +41,8 @@ export default function MetadataForm() {
       const records = await getRecords(verified.documentId!);
       setExtractedRecords(records as ExtractedRecord[]);
       setNotice(`Extraction complete — ${records.length} records staged for review.`);
-    } catch {
+    } catch (err) {
+      console.error("Extraction / metadata update failed:", err);
       // Fall back to demo records if the backend is unreachable.
       setNotice("Extraction complete — demo records staged for review.");
     }

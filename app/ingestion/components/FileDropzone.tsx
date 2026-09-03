@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
 import { cn, formatBytes } from "@/lib/utils";
-import { uploadDocument } from "@/lib/api";
+import { ApiError, uploadDocument } from "@/lib/api";
 import type { UploadedFileEntry } from "@/lib/types";
 
 const ACCEPT = {
@@ -30,6 +30,7 @@ export default function FileDropzone() {
   const removeFile = usePortalStore((s) => s.removeFile);
   const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
   const setFileDocumentId = usePortalStore((s) => s.setFileDocumentId);
+  const setFileError = usePortalStore((s) => s.setFileError);
 
   const onDrop = useCallback(
     async (accepted: File[]) => {
@@ -46,12 +47,19 @@ export default function FileDropzone() {
           // Update the entry with the backend document ID + verified status.
           setFileDocumentId(entry.id, result.document_id);
           updateFileStatus(entry.id, "verified");
-        } catch {
+        } catch (err) {
+          // Surface the real failure (e.g. 401 Unauthorized) instead of silently
+          // swallowing it — log it and stash the message on the file entry so the
+          // row can display it in its tooltip / inline error text.
+          const status = err instanceof ApiError ? err.status : "unknown";
+          const message = err instanceof Error ? err.message : "Upload failed";
+          console.error(`Upload failed for "${file.name}" (HTTP ${status}): ${message}`);
+          setFileError(entry.id, `Upload failed (HTTP ${status}): ${message}`);
           updateFileStatus(entry.id, "error");
         }
       }
     },
-    [addFiles, setFileDocumentId, updateFileStatus],
+    [addFiles, setFileDocumentId, setFileError, updateFileStatus],
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } =
@@ -142,7 +150,10 @@ function FileRow({
       }, 130);
       const finish = window.setTimeout(() => {
         window.clearInterval(interval);
-        updateFileStatus(entry.id, "verified");
+        // Don't clobber a terminal state already set by the real upload
+        // (e.g. "error" from a 401 or "verified" from a successful upload).
+        const current = usePortalStore.getState().uploadedFiles.find((f) => f.id === entry.id);
+        if (current?.status === "processing") updateFileStatus(entry.id, "verified");
       }, 3200);
       return () => window.clearTimeout(finish);
     }, 400);
@@ -195,12 +206,20 @@ function FileRow({
                 ? "bg-emerald-500/10 text-emerald-600"
                 : isProcessing
                   ? "bg-accent/10 text-accent"
-                  : "bg-black/5 text-ink/60",
+                  : entry.status === "error"
+                    ? "bg-rose-500/10 text-rose-600"
+                    : "bg-black/5 text-ink/60",
             )}
+            title={entry.errorMessage}
           >
             {entry.status}
           </span>
         </div>
+        {entry.status === "error" && entry.errorMessage && (
+          <p className="mt-1 truncate font-mono text-[9px] text-rose-600" title={entry.errorMessage}>
+            {entry.errorMessage}
+          </p>
+        )}
       </div>
       <button
         onClick={() => onRemove(entry.id)}

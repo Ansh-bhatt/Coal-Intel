@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FileSearch, LogOut, UserRound, UploadCloud } from "lucide-react";
+import { BarChart3, FileSearch, LogOut, UserRound, UploadCloud } from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
 import { usePortalStore } from "@/store/portalStore";
 import { cn } from "@/lib/utils";
+import type { PortalMode } from "@/lib/types";
 
 /**
  * Shared top navigation — CIL/CMPDI enterprise branding, active user pill,
@@ -18,10 +19,11 @@ export default function HeaderNav() {
   const activePortal = usePortalStore((s) => s.activePortal);
   const setActivePortal = usePortalStore((s) => s.setActivePortal);
 
-  const togglePortal = (mode: "EXECUTIVE" | "INGESTION") => {
+  const togglePortal = (mode: PortalMode) => {
     if (mode === activePortal) return;
     setActivePortal(mode);
-    router.push(mode === "EXECUTIVE" ? "/executive" : "/ingestion");
+    const path = mode === "EXECUTIVE" ? "/executive" : mode === "INGESTION" ? "/ingestion" : "/analytics";
+    router.push(path);
   };
 
   return (
@@ -68,6 +70,18 @@ export default function HeaderNav() {
             >
               <UploadCloud className="h-3.5 w-3.5" />
               Ingestion Hub
+            </button>
+            <button
+              onClick={() => togglePortal("ANALYTICS")}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono text-[11px] transition-all",
+                activePortal === "ANALYTICS"
+                  ? "bg-ink text-white shadow-sm"
+                  : "text-ink/60 hover:text-ink",
+              )}
+            >
+              <BarChart3 className="h-3.5 w-3.5" />
+              Analytics
             </button>
           </div>
         </div>
