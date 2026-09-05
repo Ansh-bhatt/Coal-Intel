@@ -70,28 +70,31 @@ async def get_wordcloud(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Build a word cloud from committed document chunks.
+    """TF-IDF keyword extraction over the committed corpus.
 
-    Computes TF-style term frequency across the committed corpus, filtered by
-    subsidiary/time window when provided.  Returns the top 50 terms.
+    Each chunk is treated as a document in the TF-IDF space: term frequency is
+    counted per chunk, inverse document frequency is derived from how many
+    chunks contain the term, and the score aggregates tf * idf across the
+    selected corpus. Generic English stop words plus geological/mining domain
+    noise (coal, subsidiary, report, year, data, cmpdi, cil, …) are filtered
+    before scoring. Returns the top 50 terms.
     """
+    import math
     import re
-    from collections import Counter
+    from collections import Counter, defaultdict
 
-    # Get committed document IDs (optionally filtered).
     stmt = select(Document.id).where(Document.status == "committed")
     if subsidiary:
         stmt = stmt.where(Document.subsidiary.has(name=subsidiary))
-    rows = (await db.execute(stmt)).scalars().all()
-    if not rows:
+    doc_ids = (await db.execute(stmt)).scalars().all()
+    if not doc_ids:
         return []
 
-    # Get all chunk text for those documents.
     chunks = (
         (
             await db.execute(
                 select(ChunkEmbedding.chunk_text).where(
-                    ChunkEmbedding.document_id.in_(rows)
+                    ChunkEmbedding.document_id.in_(doc_ids)
                 )
             )
         )
@@ -99,20 +102,47 @@ async def get_wordcloud(
         .all()
     )
 
-    # TF-style counting: lowercase, remove stopwords, count.
-    stopwords = {
+    stop_words = {
+        # Generic English function words.
         "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
         "of", "by", "with", "from", "is", "are", "was", "were", "be", "been",
         "being", "have", "has", "had", "do", "does", "did", "will", "would",
         "could", "should", "may", "might", "shall", "can", "not", "no", "nor",
-        "this", "that", "these", "those", "it", "its", "as", "at", "per", "each",
+        "this", "that", "these", "those", "it", "its", "as", "per", "each",
+        "their", "them", "they", "than", "then", "there", "here", "such",
+        "also", "into", "over", "under", "between", "during", "without",
+        # Reporting boilerplate / geological-mining domain noise.
+        "coal", "subsidiary", "report", "year", "data", "cmpdi", "cil",
+        "limited", "ltd", "annexure", "annex", "appendix", "table", "figure",
+        "total", "above", "below", "given", "shown", "respectively", "april",
+        "march", "january", "february", "december", "november", "october",
+        "september", "august", "july", "june", "month", "months", "quarter",
+        "section", "page", "pages", "note", "notes", "source", "hence",
+        "thus", "however", "therefore", "whereas", "including", "included",
     }
-    counter: Counter = Counter()
+
+    term_freqs: list[Counter] = []
+    doc_freq: Counter = Counter()
     for text in chunks:
         words = re.findall(r"[a-zA-Z]{4,}", text.lower())
-        for w in words:
-            if w not in stopwords and len(w) > 2:
-                counter[w] += 1
+        tf = Counter(w for w in words if w not in stop_words)
+        if not tf:
+            continue
+        term_freqs.append(tf)
+        doc_freq.update(tf.keys())
 
-    top = counter.most_common(50)
-    return [WordCloudItem(text=word, value=count) for word, count in top]
+    if not term_freqs:
+        return []
+
+    n_chunks = len(term_freqs)
+    scores: dict[str, float] = defaultdict(float)
+    for tf in term_freqs:
+        for term, freq in tf.items():
+            idf = math.log((1 + n_chunks) / (1 + doc_freq[term])) + 1.0
+            scores[term] += freq * idf
+
+    top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:50]
+    return [
+        WordCloudItem(text=term, value=int(round(score)))
+        for term, score in top
+    ]

@@ -31,6 +31,13 @@ def _user_out(user: User) -> UserOut:
 
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+    # Strict credential validation: EmailStr already rejects malformed
+    # addresses; reject blank passwords before touching the database.
+    if not payload.password or not payload.password.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password must not be empty",
+        )
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.hashed_password):

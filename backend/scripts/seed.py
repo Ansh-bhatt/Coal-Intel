@@ -65,6 +65,12 @@ DEMO_USERS = [
         "subsidiary": "Mahanadi Coalfields Ltd",
         "coalfield": "Talcher Coalfield",
     },
+    {
+        "name": "S. Krishnan",
+        "email": "s.krishnan@cil.co.in",
+        "password": "Demo@1234",
+        "role": "ADMIN",
+    },
 ]
 
 

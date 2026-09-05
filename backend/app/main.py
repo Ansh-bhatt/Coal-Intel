@@ -19,6 +19,7 @@ from app.api.v1.ingestion import router as ingestion_router
 from app.api.v1.chat import router as chat_router
 from app.api.v1.drafts import router as drafts_router
 from app.api.v1.analytics import router as analytics_router
+from app.api.v1.reports import router as reports_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("coal_intel")
@@ -75,6 +76,7 @@ api.include_router(ingestion_router)
 api.include_router(chat_router)
 api.include_router(drafts_router)
 api.include_router(analytics_router)
+api.include_router(reports_router)
 
 app.include_router(api)
 

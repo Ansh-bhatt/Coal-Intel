@@ -12,14 +12,27 @@ import ParliamentaryDraftModal from "./components/ParliamentaryDraftModal";
 export default function ExecutivePage() {
   const router = useRouter();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const user = useAuthStore((s) => s.user);
   const setActivePortal = usePortalStore((s) => s.setActivePortal);
 
   useEffect(() => {
-    if (!isAuthenticated) router.replace("/login?portal=executive");
-    else setActivePortal("EXECUTIVE");
+    if (!isAuthenticated) {
+      router.replace("/login?portal=executive");
+    } else {
+      setActivePortal("EXECUTIVE");
+    }
   }, [isAuthenticated, router, setActivePortal]);
 
-  if (!isAuthenticated) return null;
+  useEffect(() => {
+    // Defense in depth on top of middleware.ts: executives only.
+    if (isAuthenticated && user && user.role !== "EXECUTIVE" && user.role !== "ADMIN") {
+      router.replace("/unauthorized");
+    }
+  }, [isAuthenticated, user, router]);
+
+  if (!isAuthenticated || !user || (user.role !== "EXECUTIVE" && user.role !== "ADMIN")) {
+    return null;
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-canvas">

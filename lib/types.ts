@@ -3,9 +3,9 @@
  * These mirror the state contracts described in Architecture.md.
  */
 
-export type PortalMode = "EXECUTIVE" | "INGESTION" | "ANALYTICS";
+export type PortalMode = "EXECUTIVE" | "INGESTION" | "ANALYTICS" | "QUERY";
 
-export type UserRole = "EXECUTIVE" | "SUBSIDIARY";
+export type UserRole = "EXECUTIVE" | "SUBSIDIARY" | "ADMIN";
 
 export interface SessionUser {
   name: string;
@@ -86,4 +86,14 @@ export interface DraftDocument {
   preamble: string;
   body: string;
   citations: Citation[];
+}
+
+/** Server-compiled executive report (POST /reports/generate). */
+export interface ReportDocument {
+  id: string;
+  title: string;
+  preamble: string;
+  body: string;
+  citations: { id: string; documentName: string; pageNumber: number }[];
+  generatedAt: string;
 }

@@ -97,3 +97,56 @@
 .prose-editorial td {
   @apply border border-black/10 px-3 py-2 text-ink/85;
 }
+
+/* ------------------------------------------------------------------ */
+/* Welcome overlay entrance choreography (components/WelcomeOverlay)   */
+/* ------------------------------------------------------------------ */
+@keyframes welcome-kicker-in {
+  from {
+    opacity: 0;
+    letter-spacing: 0.55em;
+  }
+  to {
+    opacity: 1;
+    letter-spacing: 0.3em;
+  }
+}
+@keyframes welcome-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes welcome-line-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.welcome-kicker {
+  animation: welcome-kicker-in 700ms cubic-bezier(0.22, 1, 0.36, 1) 100ms both;
+}
+.welcome-title {
+  animation: welcome-rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both;
+}
+.welcome-sub {
+  animation: welcome-rise 700ms cubic-bezier(0.22, 1, 0.36, 1) 480ms both;
+}
+.welcome-line {
+  animation: welcome-line-grow 800ms cubic-bezier(0.22, 1, 0.36, 1) 680ms both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .welcome-kicker,
+  .welcome-title,
+  .welcome-sub,
+  .welcome-line {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+  }
+}

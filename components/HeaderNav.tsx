@@ -1,35 +1,66 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { BarChart3, FileSearch, LogOut, UserRound, UploadCloud } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  BarChart3,
+  FileSearch,
+  LogOut,
+  MessagesSquare,
+  UserRound,
+  UploadCloud,
+} from "lucide-react";
 import { useAuthStore } from "@/store/authStore";
-import { usePortalStore } from "@/store/portalStore";
 import { cn } from "@/lib/utils";
-import type { PortalMode } from "@/lib/types";
+import type { PortalMode, UserRole } from "@/lib/types";
+
+interface NavItem {
+  label: string;
+  href: string;
+  icon: typeof FileSearch;
+  portal: PortalMode;
+}
 
 /**
- * Shared top navigation — CIL/CMPDI enterprise branding, active user pill,
- * and the global portal mode toggle (Dual-Portal Shell Switch Pattern).
+ * Role-isolated navigation. Each role sees ONLY the portals it is entitled
+ * to — executives never see ingestion controls and vice versa (see
+ * Instructions.md §1: strict role-based access).
  */
+const NAV_BY_ROLE: Record<UserRole, NavItem[]> = {
+  EXECUTIVE: [
+    { label: "Executive Studio", href: "/executive", icon: FileSearch, portal: "EXECUTIVE" },
+    { label: "Analytics", href: "/analytics", icon: BarChart3, portal: "ANALYTICS" },
+    { label: "Query System", href: "/query-system", icon: MessagesSquare, portal: "QUERY" },
+  ],
+  SUBSIDIARY: [
+    { label: "Ingestion Hub", href: "/ingestion", icon: UploadCloud, portal: "INGESTION" },
+  ],
+  ADMIN: [
+    { label: "Executive Studio", href: "/executive", icon: FileSearch, portal: "EXECUTIVE" },
+    { label: "Analytics", href: "/analytics", icon: BarChart3, portal: "ANALYTICS" },
+    { label: "Query System", href: "/query-system", icon: MessagesSquare, portal: "QUERY" },
+    { label: "Ingestion Hub", href: "/ingestion", icon: UploadCloud, portal: "INGESTION" },
+  ],
+};
+
+const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
+  EXECUTIVE: { label: "Executive Access", className: "bg-ink" },
+  SUBSIDIARY: { label: "Field Operative", className: "bg-accent" },
+  ADMIN: { label: "Administrator", className: "bg-ink" },
+};
+
 export default function HeaderNav() {
   const router = useRouter();
+  const pathname = usePathname();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const activePortal = usePortalStore((s) => s.activePortal);
-  const setActivePortal = usePortalStore((s) => s.setActivePortal);
 
-  const togglePortal = (mode: PortalMode) => {
-    if (mode === activePortal) return;
-    setActivePortal(mode);
-    const path = mode === "EXECUTIVE" ? "/executive" : mode === "INGESTION" ? "/ingestion" : "/analytics";
-    router.push(path);
-  };
+  const items = user ? NAV_BY_ROLE[user.role] ?? [] : [];
 
   return (
     <header className="sticky top-0 z-40 border-b border-black/10 bg-canvas/80 backdrop-blur-md">
       <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-4 px-6 py-3">
-        {/* Branding */}
+        {/* Branding + role-scoped navigation */}
         <div className="flex items-center gap-3">
           <Link href="/" className="flex items-center gap-2.5">
             <span className="flex h-8 w-8 items-center justify-center rounded-full bg-ink font-display text-xs font-bold text-white">
@@ -45,45 +76,35 @@ export default function HeaderNav() {
             </div>
           </Link>
 
-          {/* Portal mode toggle */}
-          <div className="ml-4 hidden items-center gap-1 rounded-full border border-black/10 bg-white/70 p-1 sm:flex">
-            <button
-              onClick={() => togglePortal("EXECUTIVE")}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono text-[11px] transition-all",
-                activePortal === "EXECUTIVE"
-                  ? "bg-ink text-white shadow-sm"
-                  : "text-ink/60 hover:text-ink",
-              )}
+          {items.length > 0 && (
+            <nav
+              aria-label="Portal navigation"
+              className="ml-4 hidden items-center gap-1 rounded-full border border-black/10 bg-white/70 p-1 sm:flex"
             >
-              <FileSearch className="h-3.5 w-3.5" />
-              Executive Studio
-            </button>
-            <button
-              onClick={() => togglePortal("INGESTION")}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono text-[11px] transition-all",
-                activePortal === "INGESTION"
-                  ? "bg-accent text-white shadow-sm"
-                  : "text-ink/60 hover:text-ink",
-              )}
-            >
-              <UploadCloud className="h-3.5 w-3.5" />
-              Ingestion Hub
-            </button>
-            <button
-              onClick={() => togglePortal("ANALYTICS")}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono text-[11px] transition-all",
-                activePortal === "ANALYTICS"
-                  ? "bg-ink text-white shadow-sm"
-                  : "text-ink/60 hover:text-ink",
-              )}
-            >
-              <BarChart3 className="h-3.5 w-3.5" />
-              Analytics
-            </button>
-          </div>
+              {items.map((item) => {
+                const active =
+                  pathname === item.href || pathname.startsWith(`${item.href}/`);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 font-mono text-[11px] transition-all",
+                      active
+                        ? item.portal === "INGESTION"
+                          ? "bg-accent text-white shadow-sm"
+                          : "bg-ink text-white shadow-sm"
+                        : "text-ink/60 hover:text-ink",
+                    )}
+                  >
+                    <item.icon className="h-3.5 w-3.5" />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </nav>
+          )}
         </div>
 
         {/* Active user pill + session controls */}
@@ -93,7 +114,7 @@ export default function HeaderNav() {
               <span
                 className={cn(
                   "flex h-6 w-6 items-center justify-center rounded-full text-white",
-                  user.role === "EXECUTIVE" ? "bg-ink" : "bg-accent",
+                  ROLE_BADGE[user.role]?.className ?? "bg-ink",
                 )}
               >
                 <UserRound className="h-3.5 w-3.5" />
@@ -101,7 +122,7 @@ export default function HeaderNav() {
               <div className="leading-tight">
                 <p className="text-xs font-medium text-ink">{user.name}</p>
                 <p className="font-mono text-[9px] uppercase tracking-wider text-ink/50">
-                  {user.role === "EXECUTIVE" ? "Executive Access" : "Field Operative"}
+                  {ROLE_BADGE[user.role]?.label ?? user.role}
                 </p>
               </div>
             </div>

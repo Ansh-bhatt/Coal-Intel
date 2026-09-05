@@ -40,3 +40,5 @@ backend/*.egg-info/
 backend/.pytest_cache/
 backend/alembic/__pycache__/
 
+#markdown
+*.md

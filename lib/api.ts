@@ -95,7 +95,21 @@ export interface TokenResponse {
 }
 
 export async function login(email: string, password: string): Promise<TokenResponse> {
-  return apiRequest<TokenResponse>("/auth/login", { method: "POST", body: { email, password } });
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail || !password) {
+    throw new ApiError(400, "Email and password are required.");
+  }
+  try {
+    return await apiRequest<TokenResponse>("/auth/login", {
+      method: "POST",
+      body: { email: trimmedEmail, password },
+    });
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 401 || err.status === 403 || err.status === 400)) {
+      throw new ApiError(err.status, "Invalid credentials. Verify your email and password.");
+    }
+    throw err;
+  }
 }
 
 export async function uploadDocument(file: File, onProgress?: (pct: number) => void): Promise<{ document_id: string; status: string; file_name: string }> {
@@ -197,9 +211,26 @@ export async function generateDraft(sessionId: string): Promise<DraftOut> {
   return apiRequest<DraftOut>("/drafts", { method: "POST", body: { session_id: sessionId } });
 }
 
+export interface ReportOut {
+  id: string;
+  title: string;
+  preamble: string;
+  body: string;
+  citations: { id: string; documentName: string; pageNumber: number }[];
+  generated_at: string;
+}
+
+export async function createOnDemandReport(): Promise<ReportOut> {
+  return apiRequest<ReportOut>("/reports/generate", { method: "POST" });
+}
+
 export function documentFileUrl(documentId: string): string {
   const token = getAccessToken();
   const sep = BASE_URL.includes("?") ? "&" : "?";
   const auth = token ? `${sep}auth=${encodeURIComponent(token)}` : "";
   return `${BASE_URL}/documents/${documentId}/file${auth}`;
+}
+
+export function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError || (err instanceof Error && err.name === "TypeError");
 }

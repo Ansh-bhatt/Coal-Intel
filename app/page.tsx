@@ -8,6 +8,7 @@ import {
   BarChart3,
   Database,
   FileSearch,
+  MessagesSquare,
   Radio,
   ScanText,
   Sparkles,
@@ -146,7 +147,7 @@ export default function LandingPage() {
             <span className="h-px flex-1 bg-black/10" />
           </div>
 
-          <div className="grid gap-5 md:grid-cols-3">
+          <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-4">
             {/* Executive card */}
             <Link
               href="/login?portal=executive"
@@ -201,6 +202,37 @@ export default function LandingPage() {
               <div className="mt-auto flex items-center justify-between border-t border-black/10 pt-4">
                 <span className="font-mono text-[11px] uppercase tracking-wider text-ink/50">
                   Upload → Extract → Verify
+                </span>
+                <span className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 text-ink transition-all group-hover:bg-ink group-hover:text-white">
+                  <ArrowRight className="h-4 w-4" />
+                </span>
+              </div>
+            </Link>
+
+            {/* Query System card — standalone RAG assistant */}
+            <Link
+              href="/query-system"
+              className="group card-editorial flex flex-col gap-4 p-6 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-lift"
+            >
+              <div className="flex items-start justify-between">
+                <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-black/10 bg-ink text-white">
+                  <MessagesSquare className="h-5 w-5" />
+                </span>
+                <span className="engine-tag">PORTAL · 04</span>
+              </div>
+              <div>
+                <h3 className="font-display text-xl font-semibold tracking-tight">
+                  Query System
+                </h3>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink/65">
+                  Standalone RAG assistant for parliamentary and administrative
+                  queries — context filters, streaming answers and direct
+                  source-document traceability.
+                </p>
+              </div>
+              <div className="mt-auto flex items-center justify-between border-t border-black/10 pt-4">
+                <span className="font-mono text-[11px] uppercase tracking-wider text-ink/50">
+                  Ask → Retrieve → Verify
                 </span>
                 <span className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 text-ink transition-all group-hover:bg-ink group-hover:text-white">
                   <ArrowRight className="h-4 w-4" />
