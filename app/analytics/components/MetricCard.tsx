@@ -8,6 +8,8 @@ interface MetricCardProps {
   value: string;
   delta?: string;
   deltaPositive?: boolean;
+  /** Neutral sub-line (a real derived figure, not a trend claim). */
+  caption?: string;
   icon: LucideIcon;
   accent?: "ink" | "accent" | "emerald";
 }
@@ -17,6 +19,7 @@ export default function MetricCard({
   value,
   delta,
   deltaPositive = true,
+  caption,
   icon: Icon,
   accent = "ink",
 }: MetricCardProps) {
@@ -52,6 +55,11 @@ export default function MetricCard({
           )}
         >
           {deltaPositive ? "▲" : "▼"} {delta}
+        </p>
+      )}
+      {!delta && caption && (
+        <p className="mt-1.5 font-mono text-[11px] leading-snug text-ink/50">
+          {caption}
         </p>
       )}
     </div>

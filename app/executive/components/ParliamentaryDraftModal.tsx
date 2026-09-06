@@ -44,17 +44,25 @@ export default function ParliamentaryDraftModal() {
       if (sessionId) {
         setDraft(await generateDraft(sessionId));
       } else {
-        // No active chat session — compile the corpus-level executive brief.
-        const report = await createOnDemandReport();
+        // No active chat session — compile the corpus-level report note.
+        const report = await createOnDemandReport({
+          report_type: "parliamentary_response",
+        });
         setDraft({
           id: report.id,
           title: report.title,
           preamble: report.preamble,
-          body: report.body,
+          body: report.sections
+            .map(
+              (s) =>
+                `${s.heading}\n${s.body.replace(/^- /gm, "• ").trim()}`,
+            )
+            .join("\n\n"),
           citations: report.citations.map((c) => ({
             id: c.id,
             documentName: c.documentName,
             pageNumber: c.pageNumber,
+            documentId: c.documentId ?? undefined,
             boundingBox: { x1: 0, y1: 0, x2: 0, y2: 0 },
           })),
         });
@@ -98,7 +106,7 @@ export default function ParliamentaryDraftModal() {
       <Dialog.Trigger asChild>
         <button onClick={handleOpen} className="btn-pill !px-4 !py-2 !text-xs">
           <FileDown className="h-3.5 w-3.5" />
-          Draft parliamentary response
+          Generate report from this conversation
         </button>
       </Dialog.Trigger>
 

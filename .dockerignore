@@ -1,0 +1,16 @@
+# Keep the frontend image build context small — the repo root also contains
+# the backend service, local state and giant artifacts. (public/*.pdf must
+# stay — the PDF viewer loads the bundled sample report from it.)
+node_modules
+.next
+out
+build
+backend
+storage
+*.log
+.env*
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+/63b810daa71bd17*.pdf

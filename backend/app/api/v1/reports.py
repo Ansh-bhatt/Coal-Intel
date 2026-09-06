@@ -1,120 +1,80 @@
-"""On-demand executive report generation — POST /reports/generate.
+"""Report Generation Studio endpoints — POST /reports/generate + /reports/export.
 
 Report compilation here is strictly user-triggered: the frontend only calls
-this endpoint from an explicit "Generate Report" action (never on page mount
-or dialog open), per Instructions.md §2.
+``/generate`` from an explicit "Generate Report" action (never on page mount
+or dialog open), per Instructions.md §2. ``/export`` is stateless — the
+client echoes the generated report back and receives a rendered PDF/DOCX,
+so no extra table or migration is required.
 """
 
-import uuid
-from datetime import datetime, timezone
+import re
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db, require_role
-from app.models.document import Document
-from app.models.extraction import ChunkEmbedding
 from app.models.user import User
-from app.schemas.report import ReportCitation, ReportOut
+from app.schemas.report import ReportExportRequest, ReportOut, ReportRequest
+from app.services.export_service import (
+    export_report_docx_bytes,
+    export_report_pdf_bytes,
+)
+from app.services.report_service import compose_report
 
 router = APIRouter(prefix="/reports", tags=["reports"])
-
-MAX_SOURCES = 12
-
-
-def _summarise(chunk_text: str, max_sentences: int = 2) -> str:
-    """Condense a chunk to its leading sentences (offline-safe)."""
-    sentences = [
-        s.strip()
-        for s in chunk_text.replace("\n", " ").split(". ")
-        if s.strip()
-    ]
-    if not sentences:
-        return chunk_text.strip()
-    return ". ".join(sentences[:max_sentences]).rstrip(".") + "."
 
 
 @router.post("/generate", response_model=ReportOut)
 async def generate_report(
+    payload: ReportRequest | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_role("EXECUTIVE", "ADMIN")),
 ):
-    """Compile an executive intelligence brief from the committed corpus.
+    """Compile a structured, citation-numbered report from the committed corpus.
 
-    Deterministic, offline-safe compilation: selects the most recently
-    committed documents, condenses their leading chunks into structured
-    findings, and attaches a source citation (document + page) to each claim.
+    Accepts ``{report_type, topic, document_ids}``. The body is grounded in
+    the selected committed documents (default: the whole corpus) — statements
+    are either extracted from retrieved chunks or, when an LLM key is set,
+    narrative-composed from the same evidence. Either way every claim keeps
+    its [n] citation marker.
     """
-    doc_rows = (
-        (
-            await db.execute(
-                select(Document)
-                .where(Document.status == "committed")
-                .order_by(Document.committed_at.desc().nullslast())
-                .limit(5)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    request = payload or ReportRequest()
+    return await compose_report(db, request)
 
-    body_lines: list[str] = []
-    citations: list[ReportCitation] = []
 
-    for doc in doc_rows:
-        chunks = (
-            (
-                await db.execute(
-                    select(ChunkEmbedding)
-                    .where(ChunkEmbedding.document_id == doc.id)
-                    .order_by(ChunkEmbedding.page_number.asc())
-                    .limit(3)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for chunk in chunks:
-            if len(citations) >= MAX_SOURCES:
-                break
-            citations.append(
-                ReportCitation(
-                    id=chunk.id,
-                    documentName=doc.file_name,
-                    pageNumber=chunk.page_number,
-                )
-            )
-            body_lines.append(
-                f"- {_summarise(chunk.chunk_text)} [{len(citations)}]"
-            )
-        if len(citations) >= MAX_SOURCES:
-            break
+def _export_filename(title: str, extension: str) -> str:
+    """Sanitise a report title into a safe Content-Disposition filename."""
+    safe = "".join(ch if ch.isalnum() or ch in "-_ " else "-" for ch in title)
+    safe = "-".join(safe.split())[:100].strip("-") or "report"
+    return f"{safe}.{extension}"
 
-    if body_lines:
-        title = f"Executive Intelligence Brief — {doc_rows[0].file_name}"
-        preamble = (
-            "Compiled on request from the latest committed documents in the "
-            "Coal-Intel corpus. Every statement is traceable to its source "
-            "page via the numbered citations below."
-        )
-        body = "\n".join(body_lines)
-    else:
-        title = "Executive Intelligence Brief"
-        preamble = (
-            "No committed documents are available yet. Ingest and commit "
-            "reports through the subsidiary ingestion hub, then regenerate."
-        )
-        body = (
-            "The corpus currently holds no committed documents, so no "
-            "source-grounded statements can be compiled."
-        )
 
-    return ReportOut(
-        id=str(uuid.uuid4()),
-        title=title,
-        preamble=preamble,
-        body=body,
-        citations=citations,
-        generated_at=datetime.now(timezone.utc),
-    )
+@router.post("/export")
+async def export_report(
+    payload: ReportExportRequest,
+    current_user: User = Depends(require_role("EXECUTIVE", "ADMIN")),
+):
+    """Render a generated report to PDF or DOCX (stateless, no persistence)."""
+    report = payload.report
+    fmt = (payload.format or "pdf").lower()
+    if fmt == "pdf":
+        return Response(
+            content=export_report_pdf_bytes(report),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{_export_filename(report.title, "pdf")}"'
+            },
+        )
+    if fmt == "docx":
+        return Response(
+            content=export_report_docx_bytes(report),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument"
+                ".wordprocessingml.document"
+            ),
+            headers={
+                "Content-Disposition": f'attachment; filename="{_export_filename(report.title, "docx")}"'
+            },
+        )
+    raise HTTPException(status_code=400, detail=f"Unsupported format: {fmt}")

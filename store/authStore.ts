@@ -5,8 +5,10 @@ import { ApiError, isNetworkError } from "@/lib/api";
 import type { SessionUser } from "@/lib/types";
 import {
   clearAccessToken,
+  clearRefreshToken,
   login as apiLogin,
   setAccessToken,
+  setRefreshToken,
   type TokenResponse,
 } from "@/lib/api";
 
@@ -94,6 +96,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const token: TokenResponse = await apiLogin(email, password);
       setAccessToken(token.access_token);
+      setRefreshToken(token.refresh_token);
       persist(token.user);
       return true;
     } catch (err) {
@@ -107,6 +110,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   logout: () => {
     clearAccessToken();
+    clearRefreshToken();
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
     }
@@ -116,16 +120,8 @@ export const useAuthStore = create<AuthState>((set) => ({
 }));
 
 // Hydrate session synchronously on client-side module load so page refreshes
-// restore the session without a loading flash.
+// restore the session without a loading flash (reuses hydrate() — the logic
+// used to be duplicated inline here and the method itself was dead code).
 if (typeof window !== "undefined") {
-  try {
-    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as { user: SessionUser };
-      useAuthStore.setState({ user: parsed.user, isAuthenticated: true });
-      writeSessionCookie(parsed.user);
-    }
-  } catch {
-    /* corrupt session — ignore */
-  }
+  useAuthStore.getState().hydrate();
 }

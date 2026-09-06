@@ -34,7 +34,7 @@ def _create_token(subject: str, expires_delta: timedelta, extra: dict[str, Any] 
 
 
 def create_access_token(subject: str, role: str, subsidiary_id: int | None = None) -> str:
-    extra: dict[str, Any] = {"role": role}
+    extra: dict[str, Any] = {"role": role, "type": "access"}
     if subsidiary_id is not None:
         extra["subsidiary_id"] = subsidiary_id
     return _create_token(
@@ -45,7 +45,11 @@ def create_access_token(subject: str, role: str, subsidiary_id: int | None = Non
 
 
 def create_refresh_token(subject: str) -> str:
-    return _create_token(subject, timedelta(days=settings.refresh_token_expire_days))
+    return _create_token(
+        subject,
+        timedelta(days=settings.refresh_token_expire_days),
+        {"type": "refresh"},
+    )
 
 
 def decode_token(token: str) -> dict[str, Any]:

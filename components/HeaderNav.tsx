@@ -28,7 +28,7 @@ interface NavItem {
  */
 const NAV_BY_ROLE: Record<UserRole, NavItem[]> = {
   EXECUTIVE: [
-    { label: "Executive Studio", href: "/executive", icon: FileSearch, portal: "EXECUTIVE" },
+    { label: "Report Studio", href: "/executive", icon: FileSearch, portal: "EXECUTIVE" },
     { label: "Analytics", href: "/analytics", icon: BarChart3, portal: "ANALYTICS" },
     { label: "Query System", href: "/query-system", icon: MessagesSquare, portal: "QUERY" },
   ],
@@ -36,7 +36,7 @@ const NAV_BY_ROLE: Record<UserRole, NavItem[]> = {
     { label: "Ingestion Hub", href: "/ingestion", icon: UploadCloud, portal: "INGESTION" },
   ],
   ADMIN: [
-    { label: "Executive Studio", href: "/executive", icon: FileSearch, portal: "EXECUTIVE" },
+    { label: "Report Studio", href: "/executive", icon: FileSearch, portal: "EXECUTIVE" },
     { label: "Analytics", href: "/analytics", icon: BarChart3, portal: "ANALYTICS" },
     { label: "Query System", href: "/query-system", icon: MessagesSquare, portal: "QUERY" },
     { label: "Ingestion Hub", href: "/ingestion", icon: UploadCloud, portal: "INGESTION" },

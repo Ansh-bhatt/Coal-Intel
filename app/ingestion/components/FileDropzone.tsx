@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import {
   CheckCircle2,
@@ -14,14 +14,14 @@ import { cn, formatBytes } from "@/lib/utils";
 import { ApiError, uploadDocument } from "@/lib/api";
 import type { UploadedFileEntry } from "@/lib/types";
 
+// Mirrors backend ALLOWED_TYPES ({pdf, xlsx, docx}) — the dropzone previously
+// advertised .doc/.csv too, which the backend always rejected with 400.
 const ACCEPT = {
   "application/pdf": [".pdf"],
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
     ".docx",
   ],
-  "application/msword": [".doc"],
-  "text/csv": [".csv"],
 };
 
 export default function FileDropzone() {
@@ -35,13 +35,13 @@ export default function FileDropzone() {
   const onDrop = useCallback(
     async (accepted: File[]) => {
       if (accepted.length === 0) return;
-      // Add files to the store immediately (optimistic UI).
-      addFiles(accepted);
+      // Add files to the store immediately (optimistic UI) and keep the exact
+      // created entries — matching later by filename collides when two files
+      // share a name.
+      const entries = addFiles(accepted);
       // Upload each file to the backend.
-      for (const file of accepted) {
-        // Read the fresh store state to find the newly added entry.
-        const entry = usePortalStore.getState().uploadedFiles.find((f) => f.name === file.name);
-        if (!entry) continue;
+      for (const entry of entries) {
+        const file = entry.file;
         try {
           const result = await uploadDocument(file);
           // Update the entry with the backend document ID + verified status.

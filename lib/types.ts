@@ -1,5 +1,5 @@
 /**
- * Shared domain types for the CIL / CMPDI Search Studio.
+ * Shared domain types for the CIL / CMPDI Report Studio.
  * These mirror the state contracts described in Architecture.md.
  */
 
@@ -20,6 +20,9 @@ export interface Citation {
   id: string;
   documentName: string;
   pageNumber: number;
+  /** Backend document UUID when the citation maps to an ingested document
+   *  (absent for synthetic/demo citations). */
+  documentId?: string;
   /** Bounding coordinate set — top-left (x1, y1) and bottom-right (x2, y2). */
   boundingBox: {
     x1: number;

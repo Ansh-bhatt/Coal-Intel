@@ -5,14 +5,21 @@ through the codebase (see 05_Rules.md).
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Anchor the .env file to this package's directory (…/backend) instead of the
+# current working directory, so settings load identically whether uvicorn is
+# started from backend/ or the repository root. Real environment variables
+# still take precedence over values read from the file.
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=BACKEND_DIR / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -27,6 +34,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
+    # Set to "production" in real deployments; refuses to boot with the
+    # default development JWT secret when so configured.
+    environment: str = "development"
 
     # --- CORS ---
     cors_origins: str = "http://localhost:3000"
@@ -59,4 +69,12 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    # Fail fast instead of silently running production sign-in on a secret
+    # that is committed to the repository.
+    if settings.environment == "production" and settings.jwt_secret == "dev-only-change-me":
+        raise RuntimeError(
+            "JWT_SECRET must be overridden when ENVIRONMENT=production "
+            "(refusing to start with the default development secret)"
+        )
+    return settings

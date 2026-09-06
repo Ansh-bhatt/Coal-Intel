@@ -14,18 +14,43 @@ import {
   Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getMetrics, type AnalyticsMetrics } from "@/lib/api";
 
-/** Small client widget that simulates live system metrics. */
+/**
+ * Landing metrics strip. When the API answers (i.e. a signed-in visitor with a
+ * stored token), the counts come straight from GET /analytics/metrics and the
+ * latency is the measured round-trip. Otherwise the strip falls back to a
+ * simulated ticker and says so — an invented number is never shown as measured.
+ */
 function LiveMetrics() {
-  const [metrics, setMetrics] = useState({
+  const [metrics, setMetrics] = useState<AnalyticsMetrics | null>(null);
+  const [latency, setLatency] = useState<number | null>(null);
+  const [sim, setSim] = useState({
     latency: 128,
     documents: 148_203,
     citations: 12_847,
   });
 
   useEffect(() => {
+    let cancelled = false;
+    const started = performance.now();
+    getMetrics()
+      .then((m) => {
+        if (cancelled) return;
+        setMetrics(m);
+        setLatency(Math.max(1, Math.round(performance.now() - started)));
+      })
+      .catch(() => {
+        if (!cancelled) setMetrics(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const t = setInterval(() => {
-      setMetrics((m) => ({
+      setSim((m) => ({
         latency: Math.max(80, Math.round(m.latency + (Math.random() * 40 - 20))),
         documents: m.documents + Math.floor(Math.random() * 3),
         citations: m.citations + Math.floor(Math.random() * 2),
@@ -34,28 +59,46 @@ function LiveMetrics() {
     return () => clearInterval(t);
   }, []);
 
+  const live = metrics !== null;
+  const fmt = (n: number) => n.toLocaleString("en-IN");
+
   return (
-    <dl className="grid grid-cols-3 divide-x divide-black/10 rounded-2xl border border-black/10 bg-white/60 backdrop-blur-sm">
-      {[
-        { label: "ENGINE LATENCY", value: `${metrics.latency}ms`, accent: true },
-        { label: "DOCS INDEXED", value: metrics.documents.toLocaleString("en-IN") },
-        { label: "CITATIONS VERIFIED", value: metrics.citations.toLocaleString("en-IN") },
-      ].map((item) => (
-        <div key={item.label} className="px-5 py-4">
-          <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink/50">
-            {item.label}
-          </dt>
-          <dd
-            className={cn(
-              "mt-1 font-mono text-xl font-medium tabular-nums",
-              item.accent ? "text-accent" : "text-ink",
-            )}
-          >
-            {item.value}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <div>
+      <dl className="grid grid-cols-3 divide-x divide-black/10 rounded-2xl border border-black/10 bg-white/60 backdrop-blur-sm">
+        {[
+          {
+            label: "ENGINE LATENCY",
+            value: `${live && latency != null ? latency : sim.latency}ms`,
+            accent: true,
+          },
+          {
+            label: "DOCS INGESTED",
+            value: live ? fmt(metrics.total_documents) : fmt(sim.documents),
+          },
+          {
+            label: "RECORDS VERIFIED",
+            value: live ? fmt(metrics.verified_records) : fmt(sim.citations),
+          },
+        ].map((item) => (
+          <div key={item.label} className="px-5 py-4">
+            <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink/50">
+              {item.label}
+            </dt>
+            <dd
+              className={cn(
+                "mt-1 font-mono text-xl font-medium tabular-nums",
+                item.accent ? "text-accent" : "text-ink",
+              )}
+            >
+              {item.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-1.5 text-right font-mono text-[9px] uppercase tracking-[0.18em] text-ink/40">
+        {live ? "measured from the live corpus" : "simulated — sign in for live counts"}
+      </p>
+    </div>
   );
 }
 
@@ -108,13 +151,13 @@ export default function LandingPage() {
               <span className="text-accent">searchable.</span>
             </h1>
             <p className="mt-5 max-w-xl text-lg leading-relaxed text-ink/70">
-              Query production, overburden and dispatch data in plain language.
-              Every answer is traced back to its source document with exact
-              page-level citations.
+              Query geological reports, exploration schemes, production and
+              dispatch data in plain language. Every answer is traced back to
+              its source document with exact page-level citations.
             </p>
             <div className="mt-7 flex flex-wrap items-center gap-3">
               <Link href="/login?portal=executive" className="btn-pill">
-                Enter Executive Studio <ArrowRight className="h-4 w-4" />
+                Enter Report Studio <ArrowRight className="h-4 w-4" />
               </Link>
               <Link href="/login?portal=subsidiary" className="btn-pill-secondary">
                 Subsidiary Ingestion Hub
@@ -126,13 +169,16 @@ export default function LandingPage() {
             <LiveMetrics />
             <div className="rounded-2xl border border-black/10 bg-white/60 p-5 backdrop-blur-sm">
               <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-ink/50">
-                Current advisory
+                Featured corpus
               </p>
               <p className="mt-1.5 text-sm leading-relaxed text-ink/80">
-                Overburden removal across major coalfields is tracking{" "}
-                <strong className="font-semibold text-ink">+3.1%</strong> ahead of
-                plan for Q4 FY24. First-mile connectivity projects remain the
-                dominant growth lever.
+                The{" "}
+                <strong className="font-semibold text-ink">
+                  Gurwani block (G-3)
+                </strong>{" "}
+                exploration proposal — Northern Coalfields, Singrauli Coalfield —
+                is committed and indexed. Every figure in a generated report
+                resolves back to a page of it.
               </p>
             </div>
           </div>
@@ -161,16 +207,17 @@ export default function LandingPage() {
               </div>
               <div>
                 <h3 className="font-display text-xl font-semibold tracking-tight">
-                  Executive Search Studio
+                  Report Generation Studio
                 </h3>
                 <p className="mt-1.5 text-sm leading-relaxed text-ink/65">
-                  Ask questions in plain language, inspect source documents in a
-                  split-screen viewer and generate parliamentary response drafts.
+                  Compile cited executive reports in seconds, ask the corpus in
+                  plain language and inspect source documents in the
+                  split-screen viewer — traceability built in.
                 </p>
               </div>
               <div className="mt-auto flex items-center justify-between border-t border-black/10 pt-4">
                 <span className="font-mono text-[11px] uppercase tracking-wider text-ink/50">
-                  Query → Cite → Draft
+                  Build → Cite → Export
                 </span>
                 <span className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 text-ink transition-all group-hover:bg-ink group-hover:text-white">
                   <ArrowRight className="h-4 w-4" />
@@ -218,7 +265,7 @@ export default function LandingPage() {
                 <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-black/10 bg-ink text-white">
                   <MessagesSquare className="h-5 w-5" />
                 </span>
-                <span className="engine-tag">PORTAL · 04</span>
+                <span className="engine-tag">PORTAL · 03</span>
               </div>
               <div>
                 <h3 className="font-display text-xl font-semibold tracking-tight">
@@ -249,7 +296,7 @@ export default function LandingPage() {
                 <span className="flex h-11 w-11 items-center justify-center rounded-xl border border-black/10 bg-ink text-white">
                   <BarChart3 className="h-5 w-5" />
                 </span>
-                <span className="engine-tag">PORTAL · 03</span>
+                <span className="engine-tag">PORTAL · 04</span>
               </div>
               <div>
                 <h3 className="font-display text-xl font-semibold tracking-tight">

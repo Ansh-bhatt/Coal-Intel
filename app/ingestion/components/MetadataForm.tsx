@@ -3,18 +3,33 @@
 import { useState } from "react";
 import { ScanLine } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
+import { useAuthStore } from "@/store/authStore";
 import {
   CATEGORY_OPTIONS,
   COALFIELD_OPTIONS,
   FISCAL_YEAR_OPTIONS,
+  MOCK_EXTRACTED_RECORDS as DEMO_RECORDS,
   SUBSIDIARY_OPTIONS,
 } from "@/lib/mockData";
-import { getRecords, updateDocumentMetadata } from "@/lib/api";
+import { getRecords, isNetworkError, updateDocumentMetadata, ApiError } from "@/lib/api";
 import type { ExtractedRecord } from "@/lib/types";
 
 export default function MetadataForm() {
-  const [subsidiary, setSubsidiary] = useState(SUBSIDIARY_OPTIONS[6]);
-  const [coalfield, setCoalfield] = useState(COALFIELD_OPTIONS[0]);
+  const user = useAuthStore((s) => s.user);
+  // Subsidiary users ingest for their own subsidiary only: default (and lock,
+  // see `field(..., disabled)`) the scope selects to the signed-in user's
+  // mapping. Executives/admins keep the full dropdown choice.
+  const isSubsidiaryUser = user?.role === "SUBSIDIARY";
+  const [subsidiary, setSubsidiary] = useState(() =>
+    isSubsidiaryUser && user?.subsidiary && SUBSIDIARY_OPTIONS.includes(user.subsidiary)
+      ? user.subsidiary
+      : SUBSIDIARY_OPTIONS[6],
+  );
+  const [coalfield, setCoalfield] = useState(() =>
+    isSubsidiaryUser && user?.coalfield && COALFIELD_OPTIONS.includes(user.coalfield)
+      ? user.coalfield
+      : COALFIELD_OPTIONS[0],
+  );
   const [category, setCategory] = useState(CATEGORY_OPTIONS[0]);
   const [fiscalYear, setFiscalYear] = useState(FISCAL_YEAR_OPTIONS[1]);
 
@@ -43,8 +58,17 @@ export default function MetadataForm() {
       setNotice(`Extraction complete — ${records.length} records staged for review.`);
     } catch (err) {
       console.error("Extraction / metadata update failed:", err);
-      // Fall back to demo records if the backend is unreachable.
-      setNotice("Extraction complete — demo records staged for review.");
+      // Surface what actually happened — the old fallback printed a green
+      // "Extraction complete" even when the backend returned 4xx/5xx (or was
+      // unreachable) and staged no records at all.
+      if (isNetworkError(err)) {
+        setNotice("Backend unreachable — staged demo records for offline review.");
+        setExtractedRecords(DEMO_RECORDS as ExtractedRecord[]);
+      } else if (err instanceof ApiError) {
+        setNotice(`Extraction failed (HTTP ${err.status}): ${err.message}`);
+      } else {
+        setNotice("Extraction failed unexpectedly — see the browser console.");
+      }
     }
   };
 
@@ -53,6 +77,7 @@ export default function MetadataForm() {
     value: string,
     onChange: (v: string) => void,
     options: string[],
+    disabled = false,
   ) => (
     <label className="block">
       <span className="mb-1.5 block font-mono text-[9px] uppercase tracking-[0.18em] text-ink/50">
@@ -61,7 +86,8 @@ export default function MetadataForm() {
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm outline-none transition focus:border-ink focus:ring-2 focus:ring-accent/25"
+        disabled={disabled}
+        className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm outline-none transition focus:border-ink focus:ring-2 focus:ring-accent/25 disabled:cursor-not-allowed disabled:bg-black/5 disabled:text-ink/60"
       >
         {options.map((o) => (
           <option key={o}>{o}</option>
@@ -82,8 +108,8 @@ export default function MetadataForm() {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        {field("Subsidiary", subsidiary, setSubsidiary, SUBSIDIARY_OPTIONS)}
-        {field("Coalfield", coalfield, setCoalfield, COALFIELD_OPTIONS)}
+        {field("Subsidiary", subsidiary, setSubsidiary, SUBSIDIARY_OPTIONS, isSubsidiaryUser)}
+        {field("Coalfield", coalfield, setCoalfield, COALFIELD_OPTIONS, isSubsidiaryUser)}
         {field("Category", category, setCategory, CATEGORY_OPTIONS)}
         {field("Reporting Year", fiscalYear, setFiscalYear, FISCAL_YEAR_OPTIONS)}
       </div>

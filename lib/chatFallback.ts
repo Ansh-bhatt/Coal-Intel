@@ -19,5 +19,8 @@ export async function simulateChatStream(handlers: ChatStreamHandlers): Promise<
   }
 
   handlers.onCitations(MOCK_ASSISTANT_RESPONSE.citations as CitationDto[]);
-  handlers.onDone(uid("msg"), uid("session"));
+  // Do not invent a session id: the caller must keep its session undefined so
+  // the next request against a reachable backend creates a real server-side
+  // session (fake ids previously poisoned it with a 404/500 on reconnect).
+  handlers.onDone(uid("msg"), undefined);
 }

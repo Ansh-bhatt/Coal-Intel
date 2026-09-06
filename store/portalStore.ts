@@ -16,8 +16,10 @@ interface PortalState {
 
   // --- PDF & citation state ---
   pdfUrl: string | null;
+  /** Display name of the document currently loaded in the viewer. */
+  pdfName: string | null;
   activeCitation: Citation | null;
-  setPdfUrl: (url: string | null) => void;
+  setPdfUrl: (url: string | null, name?: string | null) => void;
   setActiveCitation: (citation: Citation | null) => void;
 
   // --- Draft generation ---
@@ -26,7 +28,10 @@ interface PortalState {
 
   // --- Ingestion & verification state ---
   uploadedFiles: UploadedFileEntry[];
-  addFiles: (files: File[]) => void;
+  /** Adds entries to the store and returns them so callers can track the
+   *  exact rows they created (never match uploads by filename — duplicates
+   *  collide). */
+  addFiles: (files: File[]) => UploadedFileEntry[];
   updateFileStatus: (id: string, status: UploadedFileEntry["status"]) => void;
   setFileDocumentId: (id: string, documentId: string) => void;
   setFileError: (id: string, message: string) => void;
@@ -47,8 +52,9 @@ export const usePortalStore = create<PortalState>((set) => ({
 
   // --- PDF & citation ---
   pdfUrl: null,
+  pdfName: null,
   activeCitation: null,
-  setPdfUrl: (url) => set({ pdfUrl: url }),
+  setPdfUrl: (url, name = null) => set({ pdfUrl: url, pdfName: name }),
   setActiveCitation: (citation) => set({ activeCitation: citation }),
 
   // --- Draft generation ---
@@ -57,21 +63,21 @@ export const usePortalStore = create<PortalState>((set) => ({
 
   // --- Ingestion & verification ---
   uploadedFiles: [],
-  addFiles: (files) =>
+  addFiles: (files) => {
+    const entries = files.map((file) => ({
+      id: uid("file"),
+      file,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      status: "queued" as const,
+      progress: 0,
+    }));
     set((state) => ({
-      uploadedFiles: [
-        ...state.uploadedFiles,
-        ...files.map((file) => ({
-          id: uid("file"),
-          file,
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          status: "queued" as const,
-          progress: 0,
-        })),
-      ],
-    })),
+      uploadedFiles: [...state.uploadedFiles, ...entries],
+    }));
+    return entries;
+  },
   updateFileStatus: (id, status) =>
     set((state) => ({
       uploadedFiles: state.uploadedFiles.map((f) =>
@@ -102,10 +108,11 @@ export const usePortalStore = create<PortalState>((set) => ({
       extractedRecords: state.extractedRecords.map((r) => {
         if (r.id !== id) return r;
         const next = { ...r, ...patch };
-        // Re-evaluate status when a human corrects a value.
+        // Re-evaluate status when a human corrects a value: any human-edited
+        // value is authoritative, so the record is marked "corrected" (this
+        // used to be a dead ternary whose branches were identical).
         if (patch.value !== undefined) {
-          next.status =
-            next.confidence >= LOW_CONFIDENCE_THRESHOLD ? "corrected" : "corrected";
+          next.status = "corrected";
         }
         return next;
       }),

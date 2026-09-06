@@ -134,7 +134,7 @@ def upgrade() -> None:
     op.create_table('chat_citations',
     sa.Column('id', sa.UUID(as_uuid=False), nullable=False),
     sa.Column('message_id', sa.UUID(as_uuid=False), nullable=False),
-    sa.Column('document_id', sa.UUID(as_uuid=False), nullable=False),
+    sa.Column('document_id', sa.UUID(as_uuid=False), nullable=True),
     sa.Column('page_number', sa.Integer(), nullable=False),
     sa.Column('bbox_x1', sa.Integer(), nullable=True),
     sa.Column('bbox_y1', sa.Integer(), nullable=True),

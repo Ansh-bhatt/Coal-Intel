@@ -30,8 +30,20 @@ const DATASETS: { value: string; short: string }[] = [
   { value: "Mahanadi Coalfields Ltd", short: "MCL" },
 ];
 
-export default function WordCloud() {
-  const [dataset, setDataset] = useState("");
+export default function WordCloud({
+  dataset: controlledDataset,
+  onDatasetChange,
+}: {
+  /** Controlled dataset filter (shared with the Top Topics panel). */
+  dataset?: string;
+  onDatasetChange?: (value: string) => void;
+} = {}) {
+  const [internalDataset, setInternalDataset] = useState("");
+  const dataset = controlledDataset ?? internalDataset;
+  const setDataset = (value: string) => {
+    setInternalDataset(value);
+    onDatasetChange?.(value);
+  };
   const [words, setWords] = useState<PlacedWord[]>([]);
   const [termCount, setTermCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -76,8 +88,11 @@ export default function WordCloud() {
               placed.map((w) => ({
                 text: w.text ?? "",
                 size: w.size ?? 12,
-                x: w.x ?? 0,
-                y: w.y ?? 0,
+                // d3-cloud returns coordinates around (0,0) — re-centre them
+                // into the SVG viewport (previously x/y were used raw, which
+                // pushed the whole cloud into the bottom-right quadrant).
+                x: WIDTH / 2 + (w.x ?? 0),
+                y: HEIGHT / 2 + (w.y ?? 0),
                 rotate: w.rotate ?? 0,
                 color: seed.find((d) => d.text === w.text)?.color ?? "#111111",
               })),
@@ -163,7 +178,7 @@ export default function WordCloud() {
                   fill={w.color}
                   opacity={0.88}
                   textAnchor="middle"
-                  transform={`translate(${w.x},${w.y}) rotate(${w.rotate}) translate(${-w.x},${-w.y})`}
+                  dominantBaseline="middle"
                   style={{ transition: "opacity 0.2s" }}
                   className="cursor-default select-none hover:opacity-100"
                 >

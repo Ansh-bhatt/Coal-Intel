@@ -9,6 +9,7 @@ and stays fully traceable (no model-memory answers).
 """
 
 import hashlib
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from app.models.extraction import ChunkEmbedding
 from app.schemas.chat import BoundingBox, CitationOut
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def chunk_text(
@@ -75,7 +77,13 @@ async def _api_embedding(client: httpx.AsyncClient, text: str) -> list[float]:
     resp = await client.post(
         f"{settings.openai_base_url}/embeddings",
         headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-        json={"model": settings.embedding_model, "input": text},
+        json={
+            "model": settings.embedding_model,
+            "input": text,
+            # Providers default to their own vector size (Gemini: 3072). Pin
+            # the request to the pgvector column width so inserts never fail.
+            "dimensions": settings.embedding_dim,
+        },
         timeout=30,
     )
     resp.raise_for_status()
@@ -83,8 +91,13 @@ async def _api_embedding(client: httpx.AsyncClient, text: str) -> list[float]:
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a list of texts, using the API when configured."""
-    if settings.openai_api_key:
+    """Embed a list of texts, using the API when configured.
+
+    Requires both a key and an embedding model: a chat-only provider (e.g.
+    OpenRouter) leaves ``EMBEDDING_MODEL`` empty, so retrieval stays on the
+    deterministic local embedder instead of calling a missing endpoint.
+    """
+    if settings.openai_api_key and settings.embedding_model:
         async with httpx.AsyncClient() as client:
             return [await _api_embedding(client, t) for t in texts]
     return [_local_embedding(t) for t in texts]
@@ -176,6 +189,7 @@ def build_citation(chunk: RetrievedChunk, index: int) -> CitationOut:
         id=f"cit-{index + 1}",
         documentName=chunk.document_name,
         pageNumber=chunk.page_number,
+        documentId=chunk.document_id,
         boundingBox=BoundingBox(
             x1=bbox[0] or 0, y1=bbox[1] or 0, x2=bbox[2] or 0, y2=bbox[3] or 0
         ),
@@ -199,7 +213,13 @@ async def generate_answer(
         try:
             return await _llm_answer(query, chunks, citations)
         except Exception:
-            pass  # fall through to extractive answer if the API call fails
+            # Never leave this silent — a dead key/wrong model otherwise looks
+            # exactly like "the AI answered" while the extractive fallback runs.
+            logger.exception(
+                "LLM answer generation failed — falling back to extractive answer"
+            )
+    else:
+        logger.warning("OPENAI_API_KEY not set — using extractive answer fallback")
 
     return _extractive_answer(query, chunks), citations
 
@@ -242,11 +262,11 @@ async def _llm_answer(
     query: str, chunks: list[RetrievedChunk], citations: list[CitationOut]
 ) -> tuple[str, list[CitationOut]]:
     context = "\n\n---\n\n".join(
-        f"[{i + 1}] {c.documentName} (p.{c.pageNumber})\n{c.text}"
+        f"[{i + 1}] {c.document_name} (p.{c.page_number})\n{c.text}"
         for i, c in enumerate(chunks)
     )
     system = (
-        "You are CIL Search Studio, a parliamentary data assistant. "
+        "You are CIL Report Studio, a parliamentary data assistant. "
         "Answer ONLY from the retrieved source excerpts below. Every factual "
         "claim must map to one of the bracketed sources. If the excerpts do not "
         "support an answer, say so explicitly. Never answer from memory."

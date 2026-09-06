@@ -41,6 +41,10 @@ export default function BoundingBoxOverlay({
     if (!activeCitation) return;
 
     const { x1, y1, x2, y2 } = activeCitation.boundingBox;
+    // Chunk-level citations carry no region (all-zero bbox): the viewer still
+    // jumps to the right page, but drawing a degenerate box would leave a
+    // stray corner bracket on an otherwise unhighlighted document.
+    if (!(x2 > x1 && y2 > y1)) return;
     const rx = x1 * scale;
     const ry = y1 * scale;
     const rw = (x2 - x1) * scale;

@@ -7,12 +7,12 @@ import { useAuthStore } from "@/store/authStore";
 import { usePortalStore } from "@/store/portalStore";
 import HeaderNav from "@/components/HeaderNav";
 import QuerySystemChat from "./components/QuerySystemChat";
-import SourcePdfPane from "./components/SourcePdfPane";
 
 /**
  * Standalone RAG query system — independent of the executive studio.
  * parliamentary/administrative users ask high-priority questions and get
- * context-grounded, citation-backed streaming answers next to the source PDF.
+ * context-grounded, citation-backed streaming answers. Source retrieval runs
+ * entirely server-side (the RAG engine); citations are surfaced as text only.
  */
 export default function QuerySystemPage() {
   const router = useRouter();
@@ -55,9 +55,8 @@ export default function QuerySystemPage() {
           </div>
         </div>
 
-        <div className="grid flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,34%)]">
+        <div className="flex min-h-0 flex-1 flex-col">
           <QuerySystemChat />
-          <SourcePdfPane />
         </div>
       </main>
     </div>

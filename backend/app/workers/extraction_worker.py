@@ -64,6 +64,10 @@ async def run_extraction(document_id: str) -> None:
             logger.info("extraction: document %s → verified", document_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("extraction failed for %s", document_id)
+            # Discard any partial pages/records added before the failure —
+            # committing only the status flip on top of them would persist
+            # half-extracted data under a document marked "error".
+            await db.rollback()
             doc.status = "error"
             await db.commit()
 

@@ -8,7 +8,7 @@ from app.core.deps import get_current_user, get_db, require_role
 from app.models.document import Document
 from app.models.extraction import ChunkEmbedding, ExtractedRecord
 from app.models.user import User
-from app.schemas.analytics import AnalyticsMetrics, WordCloudItem
+from app.schemas.analytics import AnalyticsMetrics, TopicItem, WordCloudItem
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -56,28 +56,51 @@ async def get_metrics(
         committed_documents=committed_documents,
         total_records=total_records,
         verified_records=verified_records,
-        average_confidence=round(avg_conf, 3) if avg_conf else None,
+        average_confidence=round(avg_conf, 3) if avg_conf is not None else None,
         extraction_accuracy=accuracy,
         total_chunks=total_chunks,
     )
 
 
-@router.get("/wordcloud", response_model=list[WordCloudItem])
-async def get_wordcloud(
-    subsidiary: str | None = Query(None),
-    from_date: str | None = Query(None),
-    to_date: str | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """TF-IDF keyword extraction over the committed corpus.
+# Module-level stop word list shared by /wordcloud and /topics.
+STOP_WORDS = {
+    # Generic English function words.
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "by", "with", "from", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "not", "no", "nor",
+    "this", "that", "these", "those", "it", "its", "as", "per", "each",
+    "their", "them", "they", "than", "then", "there", "here", "such",
+    "also", "into", "over", "under", "between", "during", "without",
+    "about", "across", "after", "before", "along", "already", "any",
+    "because", "both", "either", "every", "following", "further",
+    "however", "itself", "least", "less", "made", "make", "more", "most",
+    "much", "near", "need", "next", "only", "other", "others", "out",
+    "same", "several", "some", "still", "take", "taken", "through",
+    "towards", "toward", "upon", "use", "used", "uses", "using", "various",
+    "very", "well", "what", "when", "where", "which", "while", "whole",
+    "within", "yet", "thereof", "thereby", "hereby", "www", "http",
+    # Reporting boilerplate / administrative noise.
+    "coal", "subsidiary", "report", "year", "data", "cmpdi", "cil",
+    "limited", "ltd", "annexure", "annex", "appendix", "table", "figure",
+    "total", "above", "below", "given", "shown", "respectively", "april",
+    "march", "january", "february", "december", "november", "october",
+    "september", "august", "july", "june", "month", "months", "quarter",
+    "section", "page", "pages", "note", "notes", "source", "hence",
+    "thus", "therefore", "whereas", "including", "included", "plate",
+    "plates", "enclosed", "enclosure", "reference", "references",
+    "considered", "required", "regard", "regards",
+}
 
-    Each chunk is treated as a document in the TF-IDF space: term frequency is
-    counted per chunk, inverse document frequency is derived from how many
-    chunks contain the term, and the score aggregates tf * idf across the
-    selected corpus. Generic English stop words plus geological/mining domain
-    noise (coal, subsidiary, report, year, data, cmpdi, cil, …) are filtered
-    before scoring. Returns the top 50 terms.
+
+async def _corpus_term_scores(
+    db: AsyncSession, subsidiary: str | None = None
+) -> list[tuple[str, float, int]]:
+    """TF-IDF term ranking over the committed corpus.
+
+    Each chunk is a document in the TF-IDF space; the score aggregates
+    tf * idf per term across the selected corpus. Returns
+    ``[(term, score, chunk_count)]`` sorted by score descending.
     """
     import math
     import re
@@ -102,30 +125,11 @@ async def get_wordcloud(
         .all()
     )
 
-    stop_words = {
-        # Generic English function words.
-        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "by", "with", "from", "is", "are", "was", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will", "would",
-        "could", "should", "may", "might", "shall", "can", "not", "no", "nor",
-        "this", "that", "these", "those", "it", "its", "as", "per", "each",
-        "their", "them", "they", "than", "then", "there", "here", "such",
-        "also", "into", "over", "under", "between", "during", "without",
-        # Reporting boilerplate / geological-mining domain noise.
-        "coal", "subsidiary", "report", "year", "data", "cmpdi", "cil",
-        "limited", "ltd", "annexure", "annex", "appendix", "table", "figure",
-        "total", "above", "below", "given", "shown", "respectively", "april",
-        "march", "january", "february", "december", "november", "october",
-        "september", "august", "july", "june", "month", "months", "quarter",
-        "section", "page", "pages", "note", "notes", "source", "hence",
-        "thus", "however", "therefore", "whereas", "including", "included",
-    }
-
     term_freqs: list[Counter] = []
     doc_freq: Counter = Counter()
     for text in chunks:
         words = re.findall(r"[a-zA-Z]{4,}", text.lower())
-        tf = Counter(w for w in words if w not in stop_words)
+        tf = Counter(w for w in words if w not in STOP_WORDS)
         if not tf:
             continue
         term_freqs.append(tf)
@@ -141,8 +145,53 @@ async def get_wordcloud(
             idf = math.log((1 + n_chunks) / (1 + doc_freq[term])) + 1.0
             scores[term] += freq * idf
 
-    top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:50]
+    # Terms must recur in at least 2 chunks (single-chunk OCR noise),
+    # unless the corpus itself only has one chunk.
+    min_df = 2 if n_chunks >= 2 else 1
+    ranked = [
+        (term, score, doc_freq[term])
+        for term, score in scores.items()
+        if doc_freq[term] >= min_df
+    ]
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked
+
+
+@router.get("/wordcloud", response_model=list[WordCloudItem])
+async def get_wordcloud(
+    subsidiary: str | None = Query(None),
+    from_date: str | None = Query(None),
+    to_date: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Top 50 TF-IDF keyphrases over the committed corpus (word cloud).
+
+    Stop words (generic + reporting boilerplate) are filtered and terms that
+    only occur in a single chunk are suppressed as extraction noise.
+    """
+    ranked = await _corpus_term_scores(db, subsidiary)
     return [
         WordCloudItem(text=term, value=int(round(score)))
-        for term, score in top
+        for term, score, _ in ranked[:50]
+    ]
+
+
+@router.get("/topics", response_model=list[TopicItem])
+async def get_topics(
+    subsidiary: str | None = Query(None),
+    limit: int = Query(12, ge=5, le=25),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Ranked topic identification over the committed corpus.
+
+    Same TF-IDF ranking as the word cloud, surfaced as an explicit ranked
+    list (term, weight, chunk coverage) for the Analytics "Top Topics" panel
+    — the problem statement's topic-identification requirement.
+    """
+    ranked = await _corpus_term_scores(db, subsidiary)
+    return [
+        TopicItem(text=term, value=int(round(score)), chunks=chunks)
+        for term, score, chunks in ranked[:limit]
     ]

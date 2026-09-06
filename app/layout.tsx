@@ -22,7 +22,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CIL · CMPDI — Executive Search Studio",
+  title: "CIL · CMPDI — Report Studio & Ingestion Hub",
   description:
     "Conversational document intelligence for Coal India Limited & CMPDI — executive querying, source-verified citations and subsidiary data ingestion.",
 };

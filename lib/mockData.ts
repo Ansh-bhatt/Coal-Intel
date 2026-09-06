@@ -10,60 +10,61 @@ import type {
   SessionUser,
 } from "@/lib/types";
 
-export const SAMPLE_PDF_URL = "/sample-report.pdf";
+export const SAMPLE_PDF_URL = "/gurwani-block-coal-mp.pdf";
 
-export const SAMPLE_DOCUMENT_NAME = "Coal_India_Production_Report_Q4.pdf";
+export const SAMPLE_DOCUMENT_NAME =
+  "63b810daa71bd17 Gurwani block_Coal_MP.pdf";
 
-/** Citations pointing at regions of the bundled sample PDF (page 1). */
+/** Citations pointing at regions of the bundled flagship PDF (Gurwani block). */
 export const MOCK_CITATIONS: Citation[] = [
   {
     id: "cit-001",
     documentName: SAMPLE_DOCUMENT_NAME,
-    pageNumber: 1,
+    pageNumber: 2,
     boundingBox: { x1: 62, y1: 120, x2: 350, y2: 152 },
   },
   {
     id: "cit-002",
     documentName: SAMPLE_DOCUMENT_NAME,
-    pageNumber: 1,
+    pageNumber: 5,
     boundingBox: { x1: 62, y1: 175, x2: 402, y2: 205 },
   },
   {
     id: "cit-003",
     documentName: SAMPLE_DOCUMENT_NAME,
-    pageNumber: 1,
+    pageNumber: 8,
     boundingBox: { x1: 62, y1: 240, x2: 330, y2: 268 },
   },
   {
     id: "cit-004",
     documentName: SAMPLE_DOCUMENT_NAME,
-    pageNumber: 1,
+    pageNumber: 12,
     boundingBox: { x1: 62, y1: 305, x2: 260, y2: 332 },
   },
 ];
 
 export const SUGGESTED_PROMPTS: string[] = [
-  "Summarise Q4 FY24 raw coal production by subsidiary",
-  "Compare CIL output against the revised target",
-  "List top coalfields by overburden removal",
-  "Draft a parliamentary response on dispatch growth",
+  "Summarise the geology of the Gurwani block",
+  "How many boreholes and how much drilling are proposed?",
+  "Which seams and formations occur in the block?",
+  "Draft a parliamentary response on coal exploration",
 ];
 
 const markdownTemplate = `
-### Executive Brief — Raw Coal Production
+### Geological Brief — Gurwani Block (Singrauli Coalfield)
 
-The consolidated **raw coal production** for Q4 FY24 reached **217.9 MT**, registering a year-on-year growth of **6.4%**. All seven producing subsidiaries contributed to the uptick, led by MCL and SECL.
+The **Gurwani block** covers about **19.08 sq. km** and is proposed for **G-3 stage exploration** under NMET funding, with **4,950 m of drilling across 9 boreholes**.
 
-| Subsidiary | Production (MT) | YoY Δ |
-| --- | --- | --- |
-| MCL | 51.2 | +7.8% |
-| SECL | 48.6 | +6.1% |
-| NCL | 34.4 | +5.4% |
-| WCL | 26.1 | +4.9% |
+| Parameter | Value |
+| --- | --- |
+| Block area | 19.08 sq. km |
+| Proposed drilling | 4,950 m |
+| Boreholes | 9 |
+| Coalfield | Singrauli (Northern Coalfields Ltd) |
 
-**Key drivers**: augmentation of overburden removal capacity, first-mile connectivity projects, and higher rakes per day at major sidings.
+**Exploration objectives**: prove the coal seam occurrences across the block, establish their depth continuity and assess the resource potential of the property.
 
-> Figures are provisional and subject to final accounting.
+> Compiled from the committed corpus — every figure is traceable to its source page via the citations below.
 `;
 
 export const MOCK_ASSISTANT_RESPONSE = {

@@ -3,29 +3,19 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { FileText } from "lucide-react";
-import { usePortalStore } from "@/store/portalStore";
-import { SAMPLE_PDF_URL } from "@/lib/mockData";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, Citation } from "@/lib/types";
 
 function CitationTag({ citation }: { citation: Citation }) {
-  const setActiveCitation = usePortalStore((s) => s.setActiveCitation);
-  const setPdfUrl = usePortalStore((s) => s.setPdfUrl);
-
   return (
-    <button
-      onClick={() => {
-        // Ensure the sample document is mounted before jumping to the page.
-        setPdfUrl(SAMPLE_PDF_URL);
-        setActiveCitation(citation);
-      }}
-      title={`${citation.documentName} · p.${citation.pageNumber} · bbox [${citation.boundingBox.x1}, ${citation.boundingBox.y1}, ${citation.boundingBox.x2}, ${citation.boundingBox.y2}]`}
-      className="group inline-flex items-center gap-1.5 rounded-full border border-cyan-500/70 bg-cyan-500/20 px-2.5 py-1 font-mono text-[10px] font-medium text-cyan-700 shadow-[0_0_15px_rgba(6,182,212,0.3)] transition-all hover:bg-cyan-500/30"
+    <span
+      title={`${citation.documentName} · p.${citation.pageNumber}`}
+      className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/70 bg-cyan-500/20 px-2.5 py-1 font-mono text-[10px] font-medium text-cyan-700"
     >
       <FileText className="h-3 w-3" />
       <span className="truncate">{citation.documentName}</span>
       <span className="rounded-full bg-cyan-500/25 px-1.5 text-[9px]">p.{citation.pageNumber}</span>
-    </button>
+    </span>
   );
 }
 
@@ -66,7 +56,7 @@ export default function ResponseCard({ message }: { message: ChatMessage }) {
       {message.citations && message.citations.length > 0 && (
         <div className="mt-4 border-t border-black/10 pt-3">
           <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.18em] text-ink/40">
-            Source citations — click to verify in document pane
+            Source citations — document · page
           </p>
           <div className={cn("flex flex-wrap gap-2")}>
             {message.citations.map((c) => (

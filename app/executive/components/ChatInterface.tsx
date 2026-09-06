@@ -5,7 +5,7 @@ import { ArrowUp, AlertTriangle, CornerDownLeft, Sparkles } from "lucide-react";
 import ResponseCard from "./ResponseCard";
 import { SUGGESTED_PROMPTS } from "@/lib/mockData";
 import { uid } from "@/lib/utils";
-import { isNetworkError, streamChat, type CitationDto, type ChatRequest } from "@/lib/api";
+import { isNetworkError, streamChat, ApiError, type CitationDto, type ChatRequest } from "@/lib/api";
 import { simulateChatStream } from "@/lib/chatFallback";
 import { usePortalStore } from "@/store/portalStore";
 import type { ChatMessage } from "@/lib/types";
@@ -14,7 +14,7 @@ const GREETING: ChatMessage = {
   id: "greeting",
   role: "assistant",
   content:
-    "Good day. I am the **CIL Search Studio engine**. Ask me about production, overburden removal, dispatch or capital expenditure — I will trace the answer back to its source document.",
+    "Good day. I am the **CIL Report Studio engine**. Ask me about geology, seams, drilling, production or dispatch — I will trace the answer back to its source document and page. Switch to the **Report Studio** tab to compile a full cited report, or use *Generate report from this conversation* below.",
   timestamp: Date.now(),
 };
 
@@ -81,6 +81,7 @@ export default function ChatInterface() {
                       id: c.id,
                       documentName: c.documentName,
                       pageNumber: c.pageNumber,
+                      documentId: c.documentId ?? undefined,
                       boundingBox: c.boundingBox,
                     })),
                   }
@@ -90,9 +91,12 @@ export default function ChatInterface() {
         },
         onDone: (messageId: string, streamSessionId?: string) => {
           setStreaming(false);
-          const next = sessionId ?? streamSessionId ?? messageId;
+          // A server-issued session id always wins (the backend echoes the
+          // real id in "done"); the offline fallback sends none, keeping the
+          // current (possibly undefined) session.
+          const next = streamSessionId ?? sessionId;
           setSessionId(next);
-          setActiveChatSessionId(next);
+          setActiveChatSessionId(next ?? null);
         },
         onError: () => {
           setStreaming(false);
@@ -114,15 +118,45 @@ export default function ChatInterface() {
           } catch {
             setStreaming(false);
           }
-        } else {
-          setStreaming(false);
-          setStreamError(
-            "The response engine could not be reached. Check the API server and try again.",
-          );
+          return;
         }
+        // A stale session id (server restarted, DB reset, other device) makes
+        // every subsequent send 404 — drop it once and retry so the backend
+        // can create a fresh session instead of failing forever.
+        if (
+          err instanceof ApiError &&
+          (err.status === 404 || err.status === 403) &&
+          payload.session_id
+        ) {
+          setSessionId(undefined);
+          setActiveChatSessionId(null);
+          const retryPayload = { ...payload, session_id: undefined };
+          try {
+            await streamChat(retryPayload, handlers, ctrl.signal);
+            return;
+          } catch {
+            setStreaming(false);
+            setStreamError(
+              "The response engine could not be reached. Check the API server and try again.",
+            );
+            return;
+          }
+        }
+        // Expired/invalid credentials: the API client already attempted a
+        // silent token refresh — surface the real problem instead of blaming
+        // the API server.
+        if (err instanceof ApiError && err.status === 401) {
+          setStreaming(false);
+          setStreamError("Your session has expired. Please log in again.");
+          return;
+        }
+        setStreaming(false);
+        setStreamError(
+          "The response engine could not be reached. Check the API server and try again.",
+        );
       }
     },
-    [streaming, sessionId],
+    [streaming, sessionId, setActiveChatSessionId],
   );
 
   return (
@@ -135,7 +169,7 @@ export default function ChatInterface() {
           </span>
           <div className="leading-tight">
             <p className="font-display text-sm font-semibold tracking-tight">
-              Executive Search Studio
+              Search &amp; Draft
             </p>
             <p className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-wider text-ink/50">
               <span className="inline-flex h-1.5 w-1.5 animate-pulse-dot rounded-full bg-emerald-500" />

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowUp, CornerDownLeft, MessagesSquare } from "lucide-react";
+import { AlertTriangle, ArrowUp, CornerDownLeft } from "lucide-react";
 import ResponseCard from "@/app/executive/components/ResponseCard";
 import {
   COALFIELD_OPTIONS,
@@ -9,6 +9,7 @@ import {
   SUBSIDIARY_OPTIONS,
 } from "@/lib/mockData";
 import {
+  ApiError,
   isNetworkError,
   streamChat,
   type ChatRequest,
@@ -23,15 +24,15 @@ const GREETING: ChatMessage = {
   id: "qs-greeting",
   role: "assistant",
   content:
-    "Welcome to the **Coal-Intel query system**. Pick a context filter or ask a high-priority question directly — every answer is traced to its source document and page.",
+    "Welcome to the **Coal-Intel query system**. Pick a context filter or ask a high-priority question directly — every answer is traced to its source document and page. The corpus currently carries the Gurwani block G-3 exploration proposal (Northern Coalfields · Singrauli).",
   timestamp: Date.now(),
 };
 
 const HIGH_PRIORITY_QUESTIONS = [
-  "What was the total coal production across subsidiaries in FY 2023-24?",
-  "Summarise overburden removal performance for Mahanadi Coalfields Ltd.",
+  "Summarise the geology and stratigraphy of the Gurwani block.",
+  "How many boreholes and how much drilling are proposed for the Gurwani block?",
+  "What is the location and extent of the Gurwani block?",
   "Which coalfields missed their dispatch targets, and by how much?",
-  "List capital-expenditure highlights from the latest geological reports.",
 ];
 
 export default function QuerySystemChat() {
@@ -105,6 +106,7 @@ export default function QuerySystemChat() {
                       id: c.id,
                       documentName: c.documentName,
                       pageNumber: c.pageNumber,
+                      documentId: c.documentId ?? undefined,
                       boundingBox: c.boundingBox,
                     })),
                   }
@@ -114,9 +116,12 @@ export default function QuerySystemChat() {
         },
         onDone: (messageId: string, streamSessionId?: string) => {
           setStreaming(false);
-          const next = sessionId ?? streamSessionId ?? messageId;
+          // A server-issued session id always wins (the backend echoes the
+          // real id in "done"); the offline fallback sends none, keeping the
+          // current (possibly undefined) session.
+          const next = streamSessionId ?? sessionId;
           setSessionId(next);
-          setActiveChatSessionId(next);
+          setActiveChatSessionId(next ?? null);
         },
         onError: () => {
           setStreaming(false);
@@ -137,12 +142,42 @@ export default function QuerySystemChat() {
           } catch {
             setStreaming(false);
           }
-        } else {
-          setStreaming(false);
-          setStreamError(
-            "The query engine could not be reached. Check the API server and try again.",
-          );
+          return;
         }
+        // A stale session id (server restarted, DB reset, other device) makes
+        // every subsequent send 404 — drop it once and retry so the backend
+        // can create a fresh session instead of failing forever.
+        if (
+          err instanceof ApiError &&
+          (err.status === 404 || err.status === 403) &&
+          payload.session_id
+        ) {
+          setSessionId(undefined);
+          setActiveChatSessionId(null);
+          const retryPayload = { ...payload, session_id: undefined };
+          try {
+            await streamChat(retryPayload, handlers, ctrl.signal);
+            return;
+          } catch {
+            setStreaming(false);
+            setStreamError(
+              "The query engine could not be reached. Check the API server and try again.",
+            );
+            return;
+          }
+        }
+        // Expired/invalid credentials: the API client already attempted a
+        // silent token refresh — surface the real problem instead of blaming
+        // the API server.
+        if (err instanceof ApiError && err.status === 401) {
+          setStreaming(false);
+          setStreamError("Your session has expired. Please log in again.");
+          return;
+        }
+        setStreaming(false);
+        setStreamError(
+          "The query engine could not be reached. Check the API server and try again.",
+        );
       }
     },
     [streaming, sessionId, subsidiary, coalfield, fiscalYear, setActiveChatSessionId],

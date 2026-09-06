@@ -102,11 +102,11 @@ function LoginForm() {
             {isExecutive ? "Portal 01 — Restricted" : "Portal 02 — Subsidiary"}
           </p>
           <h1 className="mt-2 font-display text-3xl font-bold tracking-tight">
-            {isExecutive ? "Executive Studio" : "Ingestion Hub"}
+            {isExecutive ? "Report Studio" : "Ingestion Hub"}
           </h1>
           <p className="mt-2 text-sm leading-relaxed text-ink/65">
             {isExecutive
-              ? "Sign in with your official credentials to access parliamentary search and drafting."
+              ? "Sign in with your official credentials to compile sourced reports and query the corpus."
               : "Sign in with your subsidiary credentials to upload and verify documents."}
           </p>
 

@@ -14,6 +14,9 @@ class CitationOut(BaseModel):
     id: str
     documentName: str
     pageNumber: int
+    # Source document UUID — None for synthetic/demo citations that do not map
+    # to an ingested document row.
+    documentId: str | None = None
     boundingBox: BoundingBox
 
 

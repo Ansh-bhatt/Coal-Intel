@@ -2,14 +2,14 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, get_db, require_role
+from app.api.v1.documents import _get_scoped_document
+from app.core.deps import get_current_user, get_db
 from app.models.extraction import ExtractedRecord
 from app.models.user import User
-from app.models.document import Document
 from app.models.draft import AuditLog
 from app.schemas.extraction import (
     CommitResponse,
@@ -35,9 +35,10 @@ async def list_records(
     current_user: User = Depends(get_current_user),
 ):
     """Return extracted records for the HITL verification grid."""
-    doc = await db.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    # Scope the document to the caller (subsidiary isolation) instead of a
+    # bare db.get() — previously any user could read another subsidiary's
+    # extracted records by id.
+    doc = await _get_scoped_document(db, document_id, current_user)
     rows = (
         (
             await db.execute(
@@ -66,6 +67,10 @@ async def update_record(
     if record is None:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    # The record alone carries no ownership — scope through its parent
+    # document so subsidiary users cannot PATCH other subsidiaries' records.
+    await _get_scoped_document(db, record.document_id, current_user)
+
     old_value = record.value
     record.value = payload.value
     record.corrected_value = payload.value
@@ -91,13 +96,12 @@ async def update_record(
 @router.post("/{document_id}/commit", response_model=CommitResponse)
 async def commit_document(
     document_id: str,
+    background: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Commit a document: locks all flagged records, flips status, triggers embedding."""
-    doc = await db.get(Document, document_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_scoped_document(db, document_id, current_user)
     if doc.status != "verified":
         raise HTTPException(
             status_code=400, detail="Document must be in 'verified' status to commit"
@@ -134,8 +138,11 @@ async def commit_document(
     await db.commit()
     await db.refresh(doc)
 
-    # Trigger embedding in background.
-    await embed_document(doc.id)
+    # Embedding is pure I/O against a fresh session (see embed_document) and
+    # can take seconds with the API-backed embedder — run it as a background
+    # task so the commit response returns immediately instead of blocking the
+    # request until every chunk is embedded.
+    background.add_task(embed_document, doc.id)
 
     return CommitResponse(
         document_id=doc.id, status=doc.status, committed_at=doc.committed_at

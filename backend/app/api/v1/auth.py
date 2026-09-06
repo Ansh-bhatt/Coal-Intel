@@ -63,6 +63,13 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
         )
+    # Reject access tokens replayed at this endpoint — without the type check
+    # a stolen (short-lived) access token could mint a fresh token pair.
+    if data.get("type") != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token",
+        )
     result = await db.execute(select(User).where(User.id == data.get("sub")))
     user = result.scalar_one_or_none()
     if user is None:

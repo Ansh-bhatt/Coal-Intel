@@ -21,10 +21,17 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
 export default function PdfSplitViewer() {
   const pdfUrl = usePortalStore((s) => s.pdfUrl);
-  const setPdfUrl = usePortalStore((s) => s.setPdfUrl);
+  const pdfName = usePortalStore((s) => s.pdfName);
   const activeCitation = usePortalStore((s) => s.activeCitation);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Tracks the in-flight pdf.js render task so a newer page/zoom change can
+  // cancel it — pdf.js forbids two concurrent render() calls on one canvas.
+  const renderTaskRef = useRef<{ cancel: () => void; promise: Promise<unknown> } | null>(null);
+  // Serializes renderPage calls: rapid page/zoom/citation jumps previously
+  // raced and threw "Cannot use the same canvas during multiple render
+  // operations", leaving the canvas blank.
+  const renderChainRef = useRef<Promise<void>>(Promise.resolve());
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState(1);
   const [numPages, setNumPages] = useState(0);
@@ -33,10 +40,19 @@ export default function PdfSplitViewer() {
   const [error, setError] = useState<string | null>(null);
   const [dims, setDims] = useState({ width: 0, height: 0 });
 
-  const renderPage = useCallback(
+  const doRender = useCallback(
     async (proxy: PDFDocumentProxy, pageNum: number, scaleVal: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
+      // Cancel any still-running render before touching the canvas.
+      renderTaskRef.current?.cancel();
+      try {
+        await renderTaskRef.current?.promise;
+      } catch {
+        /* a cancelled render is expected here */
+      }
+      renderTaskRef.current = null;
+
       const pdfPage = await proxy.getPage(pageNum);
       const viewport = pdfPage.getViewport({ scale: scaleVal });
       canvas.width = viewport.width;
@@ -46,21 +62,48 @@ export default function PdfSplitViewer() {
       setDims({ width: viewport.width, height: viewport.height });
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
-      await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+      const task = pdfPage.render({ canvasContext: ctx, viewport });
+      renderTaskRef.current = task;
+      try {
+        await task.promise;
+      } catch (err) {
+        // A superseded render is cancelled by design — not an error.
+        if (err instanceof Error && err.name !== "RenderingCancelledException") {
+          throw err;
+        }
+      } finally {
+        if (renderTaskRef.current === task) renderTaskRef.current = null;
+      }
     },
     [],
   );
 
-  // Load document once (defaults to the bundled sample report).
+  const renderPage = useCallback(
+    (proxy: PDFDocumentProxy, pageNum: number, scaleVal: number): Promise<void> => {
+      const next = renderChainRef.current.then(() => doRender(proxy, pageNum, scaleVal));
+      // Keep the chain alive even when a render fails.
+      renderChainRef.current = next.catch(() => undefined);
+      return next;
+    },
+    [doRender],
+  );
+
+  // Load document once (auto-mounts the flagship Gurwani report so the
+  // reference pane is never empty).
   useEffect(() => {
     let cancelled = false;
+    let loadedDoc: PDFDocumentProxy | null = null;
     const url = pdfUrl ?? SAMPLE_PDF_URL;
     setLoading(true);
     setError(null);
     pdfjsLib
       .getDocument(url)
       .promise.then((proxy) => {
-        if (cancelled) return;
+        if (cancelled) {
+          void proxy.destroy();
+          return;
+        }
+        loadedDoc = proxy;
         setDoc(proxy);
         setNumPages(proxy.numPages);
         setPage(1);
@@ -73,19 +116,21 @@ export default function PdfSplitViewer() {
       });
     return () => {
       cancelled = true;
+      // Destroy the document when the url changes or the viewer unmounts —
+      // previously proxies (and their worker memory) leaked.
+      if (loadedDoc) void loadedDoc.destroy();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfUrl]);
 
   // Re-render page when document, page or zoom changes.
   useEffect(() => {
     if (!doc) return;
-    let cancelled = false;
+    let active = true;
     renderPage(doc, page, scale).catch(() => {
-      if (!cancelled) setError("Failed to render page.");
+      if (active) setError("Failed to render page.");
     });
     return () => {
-      cancelled = true;
+      active = false;
     };
   }, [doc, page, scale, renderPage]);
 
@@ -95,8 +140,6 @@ export default function PdfSplitViewer() {
       setPage(activeCitation.pageNumber);
     }
   }, [activeCitation, page]);
-
-  const hasDoc = pdfUrl !== null;
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-black/10 bg-white/70 backdrop-blur-sm">
@@ -108,7 +151,7 @@ export default function PdfSplitViewer() {
           </span>
           <div className="min-w-0 leading-tight">
             <p className="truncate font-mono text-[11px] text-ink">
-              {hasDoc ? SAMPLE_DOCUMENT_NAME : "No document"}
+              {pdfName ?? SAMPLE_DOCUMENT_NAME}
             </p>
             <p className="font-mono text-[9px] uppercase tracking-wider text-ink/50">
               pdf.js · {numPages} page{numPages === 1 ? "" : "s"}
@@ -183,17 +226,10 @@ export default function PdfSplitViewer() {
         <span className="font-mono text-[10px] uppercase tracking-wider text-ink/50">
           Source-verified reference pane
         </span>
-        {hasDoc ? (
-          <span className="font-mono text-[10px] text-ink/50">
-            ID: {SAMPLE_DOCUMENT_NAME}
+        {pdfName && (
+          <span className="max-w-[60%] truncate font-mono text-[10px] text-ink/50">
+            {pdfName}
           </span>
-        ) : (
-          <button
-            onClick={() => setPdfUrl(SAMPLE_PDF_URL)}
-            className="btn-pill-secondary !px-3 !py-1 !text-xs"
-          >
-            Load sample report
-          </button>
         )}
       </div>
     </div>

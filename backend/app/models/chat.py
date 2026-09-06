@@ -65,8 +65,10 @@ class ChatCitation(Base):
     message_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=False
     )
-    document_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("documents.id"), nullable=False
+    document_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("documents.id"),
+        nullable=True,  # nullable so demo/synthetic citations can be persisted
     )
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
     bbox_x1: Mapped[int | None] = mapped_column(Integer, nullable=True)

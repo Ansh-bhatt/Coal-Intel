@@ -1,19 +1,41 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Upload } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
-import { LOW_CONFIDENCE_THRESHOLD } from "@/store/portalStore";
 import { cn } from "@/lib/utils";
-import { commitDocument, getRecords, updateRecord } from "@/lib/api";
+import { commitDocument, isNetworkError, updateRecord } from "@/lib/api";
 import type { ExtractedRecord } from "@/lib/types";
 
 const THRESHOLD = 0.85;
+/** Debounce window for persisting inline corrections (one PATCH per pause,
+ *  instead of one request per keystroke). */
+const PATCH_DEBOUNCE_MS = 400;
 
 export default function VerificationGrid() {
   const records = usePortalStore((s) => s.extractedRecords);
   const uploadedFiles = usePortalStore((s) => s.uploadedFiles);
   const updateLocalRecord = usePortalStore((s) => s.updateRecord);
   const markAllVerified = usePortalStore((s) => s.markAllVerified);
+  const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
+
+  const [committing, setCommitting] = useState(false);
+  const [committed, setCommitted] = useState(false);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  // Per-record debounced save timers, keeping the record's pre-edit status so
+  // a failed PATCH can revert the optimistic "corrected" badge.
+  const patchTimers = useRef<
+    Map<string, { timer: ReturnType<typeof setTimeout>; originalStatus: string }>
+  >(new Map());
+
+  // Cancel pending saves on unmount so no PATCH fires against a dead grid.
+  useEffect(() => {
+    const timers = patchTimers.current;
+    return () => {
+      for (const { timer } of timers.values()) clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
 
   const verifiedCount = records.filter((r) => r.status === "verified" || r.status === "corrected").length;
   const avgConfidence =
@@ -23,26 +45,56 @@ export default function VerificationGrid() {
   const allVerified = records.length > 0 && verifiedCount === records.length;
 
   const handleLocalUpdate = (id: string, patch: Partial<ExtractedRecord>) => {
+    const value = patch.value;
     updateLocalRecord(id, patch);
-    // Persist corrections to the backend when a value changes.
-    if (patch.value !== undefined) {
-      updateRecord(id, patch.value).catch((err) => {
+    if (value === undefined) return;
+    // Debounce the backend PATCH — previously every keystroke fired a request.
+    const timers = patchTimers.current;
+    const existing = timers.get(id);
+    const originalStatus =
+      existing?.originalStatus ??
+      usePortalStore.getState().extractedRecords.find((r) => r.id === id)?.status ??
+      "pending";
+    if (existing) clearTimeout(existing.timer);
+    const timer = setTimeout(() => {
+      timers.delete(id);
+      updateRecord(id, value).catch((err) => {
         console.error("Failed to persist record correction:", err);
-        /* keep local state if the backend is unreachable */
+        // Revert the optimistic "corrected" status so the grid doesn't claim
+        // the backend accepted a correction it never saw.
+        updateLocalRecord(id, { status: originalStatus as ExtractedRecord["status"] });
       });
-    }
+    }, PATCH_DEBOUNCE_MS);
+    timers.set(id, { timer, originalStatus });
   };
 
   const handleCommit = async () => {
-    markAllVerified();
     const doc = uploadedFiles.find((f) => f.documentId && f.status === "verified");
-    if (doc?.documentId) {
-      try {
-        await commitDocument(doc.documentId);
-      } catch (err) {
+    if (!doc?.documentId) return;
+    setCommitting(true);
+    setCommitError(null);
+    try {
+      await commitDocument(doc.documentId);
+      // Flip the grid to the committed state only after the backend accepted
+      // the commit — previously the UI marked everything verified up-front
+      // and swallowed backend 400s (e.g. unresolved flagged records) as a
+      // fake success.
+      markAllVerified();
+      updateFileStatus(doc.id, "committed");
+      setCommitted(true);
+    } catch (err) {
+      if (isNetworkError(err)) {
+        // Backend unreachable → keep the flow demoable offline.
+        markAllVerified();
+        setCommitted(true);
+      } else {
         console.error("Failed to commit batch:", err);
-        /* demoable offline */
+        setCommitError(
+          err instanceof Error ? err.message : "Commit failed — please retry.",
+        );
       }
+    } finally {
+      setCommitting(false);
     }
   };
 
@@ -95,6 +147,15 @@ export default function VerificationGrid() {
         ))}
       </div>
 
+      {commitError && (
+        <p
+          role="alert"
+          className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 font-mono text-[10px] text-rose-600"
+        >
+          Commit failed: {commitError}
+        </p>
+      )}
+
       {/* Footer */}
       <div className="mt-4 flex items-center justify-between border-t border-black/10 pt-3">
         <div className="flex items-center gap-2 font-mono text-[10px] text-ink/50">
@@ -108,11 +169,15 @@ export default function VerificationGrid() {
         </div>
         <button
           onClick={handleCommit}
-          disabled={allVerified}
+          disabled={committing || committed || allVerified}
           className="btn-pill !px-4 !py-2 !text-xs"
         >
           <CheckCircle2 className="h-3.5 w-3.5" />
-          {allVerified ? "Batch committed" : "Commit batch"}
+          {committed || allVerified
+            ? "Batch committed"
+            : committing
+              ? "Committing…"
+              : "Commit batch"}
         </button>
       </div>
     </div>
@@ -127,7 +192,6 @@ function RecordRow({
   onUpdate: (id: string, patch: Partial<ExtractedRecord>) => void;
 }) {
   const isLowConfidence = record.confidence < THRESHOLD;
-  const isVerified = record.status === "verified" || record.status === "corrected";
 
   const statusColors: Record<string, string> = {
     pending: "bg-black/5 text-ink/60",

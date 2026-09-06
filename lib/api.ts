@@ -18,14 +18,65 @@ function getAccessToken(): string | null {
   return window.localStorage.getItem("coal_intel_access_token");
 }
 
+function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem("coal_intel_refresh_token");
+}
+
 export function setAccessToken(token: string | null) {
   if (typeof window === "undefined") return;
   if (token) window.localStorage.setItem("coal_intel_access_token", token);
   else window.localStorage.removeItem("coal_intel_access_token");
 }
 
+export function setRefreshToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  if (token) window.localStorage.setItem("coal_intel_refresh_token", token);
+  else window.localStorage.removeItem("coal_intel_refresh_token");
+}
+
 export function clearAccessToken() {
   setAccessToken(null);
+}
+
+export function clearRefreshToken() {
+  setRefreshToken(null);
+}
+
+/**
+ * Exchange the stored refresh token for a fresh token pair (POST /auth/refresh).
+ * Single-flight: concurrent 401s share one in-flight refresh instead of racing
+ * the endpoint with already-rotated tokens. Resolves `false` when there is no
+ * refresh token or the endpoint rejects it (caller then surfaces the 401).
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function doRefresh(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch(`${BASE_URL}/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as TokenResponse;
+    setAccessToken(data.access_token);
+    setRefreshToken(data.refresh_token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function refreshAccessToken(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = doRefresh().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
 }
 
 export class ApiError extends Error {
@@ -48,23 +99,28 @@ export async function apiRequest<T = unknown>(
   path: string,
   { method = "GET", body, raw, headers = {} }: RequestOptions = {},
 ): Promise<T> {
-  const token = getAccessToken();
-  const finalHeaders: Record<string, string> = { ...headers };
-  if (token) finalHeaders.Authorization = `Bearer ${token}`;
+  // Headers are rebuilt per attempt so the retry picks up the fresh token.
+  const build = (): RequestInit => {
+    const finalHeaders: Record<string, string> = { ...headers };
+    const token = getAccessToken();
+    if (token) finalHeaders.Authorization = `Bearer ${token}`;
 
-  let payload: BodyInit | undefined;
-  if (raw !== undefined) {
-    payload = raw as BodyInit;
-  } else if (body !== undefined) {
-    finalHeaders["Content-Type"] = "application/json";
-    payload = JSON.stringify(body);
+    let payload: BodyInit | undefined;
+    if (raw !== undefined) {
+      payload = raw as BodyInit;
+    } else if (body !== undefined) {
+      finalHeaders["Content-Type"] = "application/json";
+      payload = JSON.stringify(body);
+    }
+    return { method, headers: finalHeaders, body: payload };
+  };
+
+  let res = await fetch(`${BASE_URL}${path}`, build());
+  // Access tokens are short-lived (ACCESS_TOKEN_EXPIRE_MINUTES, default 30).
+  // On 401, try one silent refresh + retry before surfacing the error.
+  if (res.status === 401 && (await refreshAccessToken())) {
+    res = await fetch(`${BASE_URL}${path}`, build());
   }
-
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method,
-    headers: finalHeaders,
-    body: payload,
-  });
 
   if (!res.ok) {
     let detail = res.statusText;
@@ -147,7 +203,7 @@ export async function updateRecord(recordId: string, value: string): Promise<Ext
 export async function commitDocument(documentId: string): Promise<{ document_id: string; status: string; committed_at: string }> {
   return apiRequest(`/documents/${documentId}/commit`, { method: "POST" });
 }
-export interface CitationDto { id: string; documentName: string; pageNumber: number; boundingBox: { x1: number; y1: number; x2: number; y2: number }; }
+export interface CitationDto { id: string; documentName: string; pageNumber: number; documentId?: string | null; boundingBox: { x1: number; y1: number; x2: number; y2: number }; }
 export interface ChatRequest { message: string; session_id?: string; subsidiary?: string; coalfield?: string; fiscal_year?: string; }
 export interface ChatStreamHandlers { onToken: (token: string) => void; onCitations: (citations: CitationDto[]) => void; onDone: (messageId: string, sessionId?: string) => void; onError: (err: Error) => void; }
 
@@ -157,13 +213,21 @@ export interface ChatStreamHandlers { onToken: (token: string) => void; onCitati
  * with an Authorization header).
  */
 export async function streamChat(payload: ChatRequest, handlers: ChatStreamHandlers, signal?: AbortSignal): Promise<void> {
-  const token = getAccessToken();
-  const res = await fetch(`${BASE_URL}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), Accept: "text/event-stream" },
-    body: JSON.stringify(payload),
-    signal,
-  });
+  const send = () => {
+    const token = getAccessToken();
+    return fetch(`${BASE_URL}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}), Accept: "text/event-stream" },
+      body: JSON.stringify(payload),
+      signal,
+    });
+  };
+  let res = await send();
+  // Access tokens are short-lived — one silent refresh + retry on 401 before
+  // the caller's error handling kicks in.
+  if (res.status === 401 && (await refreshAccessToken())) {
+    res = await send();
+  }
   if (!res.ok || !res.body) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail ?? detail; } catch { /* ignore */ }
@@ -192,7 +256,10 @@ export async function streamChat(payload: ChatRequest, handlers: ChatStreamHandl
       try {
         if (event === "token") handlers.onToken(JSON.parse(data).token);
         else if (event === "citations") handlers.onCitations(JSON.parse(data));
-        else if (event === "done") handlers.onDone(JSON.parse(data).message_id, JSON.parse(data).session_id);
+        else if (event === "done") {
+          const done = JSON.parse(data);
+          handlers.onDone(done.message_id, done.session_id);
+        }
       } catch { /* skip malformed event */ }
     }
   }
@@ -206,29 +273,98 @@ export async function getWordCloud(subsidiary?: string): Promise<WordCloudItem[]
   return apiRequest<WordCloudItem[]>(`/analytics/wordcloud${q}`);
 }
 
+export interface TopicItem { text: string; value: number; chunks: number; }
+export async function getTopics(subsidiary?: string, limit = 12): Promise<TopicItem[]> {
+  const q = new URLSearchParams();
+  if (subsidiary) q.set("subsidiary", subsidiary);
+  q.set("limit", String(limit));
+  return apiRequest<TopicItem[]>(`/analytics/topics?${q.toString()}`);
+}
+
+export interface DocumentDto {
+  id: string;
+  file_name: string;
+  file_type: string;
+  subsidiary: string | null;
+  coalfield: string | null;
+  category: string | null;
+  fiscal_year: string | null;
+  status: string;
+  uploaded_at: string;
+  committed_at: string | null;
+}
+export async function listDocuments(limit = 50): Promise<DocumentDto[]> {
+  const data = await apiRequest<{ items: DocumentDto[]; total: number }>(
+    `/documents?limit=${limit}`,
+  );
+  return data.items;
+}
+
 export interface DraftOut { id: string; title: string; preamble: string; body: string; citations: CitationDto[]; }
 export async function generateDraft(sessionId: string): Promise<DraftOut> {
   return apiRequest<DraftOut>("/drafts", { method: "POST", body: { session_id: sessionId } });
 }
 
+export type ReportType =
+  | "geological_brief"
+  | "production_review"
+  | "parliamentary_response";
+
+export interface ReportRequestDto {
+  report_type: ReportType;
+  topic?: string;
+  document_ids?: string[];
+}
+
+export interface ReportSectionDto { heading: string; body: string; }
+export interface ReportKeyFigureDto { label: string; value: string; }
+export interface ReportCitationDto {
+  id: string;
+  documentName: string;
+  pageNumber: number;
+  documentId?: string | null;
+  quote?: string | null;
+}
+
 export interface ReportOut {
   id: string;
+  report_type: string;
   title: string;
   preamble: string;
-  body: string;
-  citations: { id: string; documentName: string; pageNumber: number }[];
+  sections: ReportSectionDto[];
+  key_figures: ReportKeyFigureDto[];
+  citations: ReportCitationDto[];
   generated_at: string;
+  compile_seconds: number;
+  source_count: number;
 }
 
-export async function createOnDemandReport(): Promise<ReportOut> {
-  return apiRequest<ReportOut>("/reports/generate", { method: "POST" });
+export async function createOnDemandReport(
+  payload?: Partial<ReportRequestDto>,
+): Promise<ReportOut> {
+  return apiRequest<ReportOut>("/reports/generate", {
+    method: "POST",
+    body: payload ?? { report_type: "geological_brief" },
+  });
 }
 
-export function documentFileUrl(documentId: string): string {
-  const token = getAccessToken();
-  const sep = BASE_URL.includes("?") ? "&" : "?";
-  const auth = token ? `${sep}auth=${encodeURIComponent(token)}` : "";
-  return `${BASE_URL}/documents/${documentId}/file${auth}`;
+/** Stateless export — echoes the generated report back for PDF/DOCX rendering. */
+export async function exportReport(
+  report: ReportOut,
+  format: "pdf" | "docx",
+): Promise<void> {
+  const blob = await apiRequest<Blob>("/reports/export", {
+    method: "POST",
+    body: { report, format },
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `${report.title.replace(/[^\w.-]+/g, "-").slice(0, 80) || "report"}.${format}`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 export function isNetworkError(err: unknown): boolean {

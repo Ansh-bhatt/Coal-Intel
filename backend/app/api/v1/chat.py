@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.deps import get_current_user, get_db
-from app.models.chat import ChatMessage, ChatSession
+from app.models.chat import ChatCitation, ChatMessage, ChatSession
+from app.models.document import Document
 from app.models.user import User
 from app.schemas.chat import (
     ChatHistoryMessage,
@@ -55,9 +56,21 @@ async def _stream_answer(
     await db.commit()
     await db.refresh(assist)
 
-    # Persist citations.
+    # Persist citations (real rows — previously a no-op stub, so drafts and
+    # history lost all source traceability).
     for c in citations:
-        pass  # ChatCitation persistence is omitted for prototype brevity
+        db.add(
+            ChatCitation(
+                message_id=assist.id,
+                document_id=c.documentId,
+                page_number=c.pageNumber,
+                bbox_x1=int(c.boundingBox.x1),
+                bbox_y1=int(c.boundingBox.y1),
+                bbox_x2=int(c.boundingBox.x2),
+                bbox_y2=int(c.boundingBox.y2),
+            )
+        )
+    await db.commit()
 
     # Stream tokens.
     words = answer.split(" ")
@@ -89,6 +102,19 @@ async def chat(
             )
         )
         await db.commit()
+    else:
+        # Validate the caller-supplied session before opening the stream:
+        # without this, any user could append messages to (or read history
+        # from) someone else's session, and unknown ids blow up mid-stream
+        # with a raw FK-violation 500 (the offline fallback client invents
+        # placeholder session ids).
+        session = await db.get(ChatSession, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        if session.user_id != current_user.id:
+            raise HTTPException(
+                status_code=403, detail="Not authorized to access this chat session"
+            )
 
     return EventSourceResponse(
         _stream_answer(
@@ -128,6 +154,14 @@ async def get_session_messages(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Return the transcript of a chat session (owner-only)."""
+    session = await db.get(ChatSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if session.user_id != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="Not authorized to access this chat session"
+        )
     rows = (
         (
             await db.execute(
@@ -139,7 +173,44 @@ async def get_session_messages(
         .scalars()
         .all()
     )
+
+    # Resolve citation document names in one query instead of N+1 lookups.
+    doc_ids = {
+        c.document_id
+        for m in rows
+        for c in m.citations
+        if c.document_id is not None
+    }
+    names_by_id: dict[str, str] = {}
+    if doc_ids:
+        name_rows = (
+            await db.execute(
+                select(Document.id, Document.file_name).where(Document.id.in_(doc_ids))
+            )
+        ).all()
+        names_by_id = {r.id: r.file_name for r in name_rows}
+
+    def _citation_out(c: ChatCitation) -> CitationOut:
+        doc_id = c.document_id
+        return CitationOut(
+            id=c.id,
+            documentName=names_by_id.get(doc_id or "", "source-document"),
+            pageNumber=c.page_number,
+            documentId=doc_id,
+            boundingBox=BoundingBox(
+                x1=c.bbox_x1 or 0,
+                y1=c.bbox_y1 or 0,
+                x2=c.bbox_x2 or 0,
+                y2=c.bbox_y2 or 0,
+            ),
+        )
+
     return [
-        ChatHistoryMessage(id=m.id, role=m.role, content=m.content)
+        ChatHistoryMessage(
+            id=m.id,
+            role=m.role,
+            content=m.content,
+            citations=[_citation_out(c) for c in m.citations],
+        )
         for m in rows
     ]

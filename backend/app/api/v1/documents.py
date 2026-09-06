@@ -13,7 +13,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -45,11 +45,25 @@ def _to_out(doc: Document) -> DocumentOut:
 
 
 async def _get_scoped_document(db: AsyncSession, document_id: str, current_user: User) -> Document:
+    """Fetch a document, enforcing per-subsidiary access.
+
+    Subsidiary users may access documents assigned to their own subsidiary.
+    A document uploaded through ``POST /documents`` has no subsidiary yet —
+    one is only assigned by ``PATCH /{id}/metadata`` — so such in-flight
+    uploads are scoped to their uploader instead. Without that, the metadata
+    submission that assigns the subsidiary would always 403 for the very
+    user who uploaded the document (chicken-and-egg).
+    Executive/admin users are not subsidiary-scoped and see everything.
+    """
     doc = await db.get(Document, document_id)
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    if current_user.role == "SUBSIDIARY" and current_user.subsidiary_id is not None and doc.subsidiary_id != current_user.subsidiary_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    if current_user.role == "SUBSIDIARY" and current_user.subsidiary_id is not None:
+        is_scoped_to_user = doc.subsidiary_id == current_user.subsidiary_id or (
+            doc.subsidiary_id is None and doc.uploaded_by == current_user.id
+        )
+        if not is_scoped_to_user:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
     return doc
 
 
@@ -70,7 +84,10 @@ async def upload_document(
     storage_root = Path(settings.storage_dir)
     storage_root.mkdir(parents=True, exist_ok=True)
     doc_id = str(uuid.uuid4())
-    storage_path = f"{doc_id}/{name}"
+    # Store under a flat, generated name — never reuse the client-supplied
+    # filename in a path (a crafted name like "../../app/main.py" would
+    # otherwise escape the storage root).
+    storage_path = f"{doc_id}/{suffix}"
     dest = storage_root / storage_path
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
@@ -87,8 +104,14 @@ async def list_documents(limit: int = 20, offset: int = 0, db: AsyncSession = De
     stmt = select(Document)
     count_stmt = select(func.count()).select_from(Document)
     if current_user.role == "SUBSIDIARY" and current_user.subsidiary_id is not None:
-        stmt = stmt.where(Document.subsidiary_id == current_user.subsidiary_id)
-        count_stmt = count_stmt.where(Document.subsidiary_id == current_user.subsidiary_id)
+        # Mirror _get_scoped_document: the subsidiary's documents plus the
+        # caller's own in-flight uploads (which have no subsidiary yet).
+        scope = or_(
+            Document.subsidiary_id == current_user.subsidiary_id,
+            and_(Document.subsidiary_id.is_(None), Document.uploaded_by == current_user.id),
+        )
+        stmt = stmt.where(scope)
+        count_stmt = count_stmt.where(scope)
     total = (await db.execute(count_stmt)).scalar_one()
     rows = (await db.execute(stmt.order_by(Document.uploaded_at.desc()).limit(limit).offset(offset))).scalars().all()
     return DocumentListOut(items=[_to_out(d) for d in rows], total=total, limit=limit, offset=offset)
@@ -106,6 +129,12 @@ async def update_metadata(document_id: str, payload: MetadataUpdate, db: AsyncSe
     sub = (await db.execute(select(Subsidiary).where(Subsidiary.name == payload.subsidiary))).scalar_one_or_none()
     if sub is None:
         raise HTTPException(status_code=404, detail="Subsidiary not found")
+    if current_user.role == "SUBSIDIARY" and sub.id != current_user.subsidiary_id:
+        # Subsidiary users may only tag documents into their own subsidiary.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to tag documents for this subsidiary",
+        )
     coalfield = (await db.execute(select(Coalfield).where(Coalfield.name == payload.coalfield, Coalfield.subsidiary_id == sub.id))).scalar_one_or_none()
     if coalfield is None:
         raise HTTPException(status_code=404, detail="Coalfield not found")
