@@ -24,9 +24,11 @@ export default function VerificationGrid() {
   const markAllVerified = usePortalStore((s) => s.markAllVerified);
   const setExtractedRecords = usePortalStore((s) => s.setExtractedRecords);
   const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
+  const committedDocIds = usePortalStore((s) => s.committedDocIds);
+  const markDocCommitted = usePortalStore((s) => s.markDocCommitted);
+  const extractedRecordsDocId = usePortalStore((s) => s.extractedRecordsDocId);
 
   const [committing, setCommitting] = useState(false);
-  const [committed, setCommitted] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   // Per-record debounced save timers, keeping the record's pre-edit status so
   // a failed PATCH can revert the optimistic "corrected" badge.
@@ -49,9 +51,22 @@ export default function VerificationGrid() {
       ? (records.reduce((a, r) => a + r.confidence, 0) / records.length * 100).toFixed(1)
       : "—";
   const allVerified = records.length > 0 && verifiedCount === records.length;
-  // The document this grid's records belong to — the first staged upload with
-  // a backend id (the same selection MetadataForm extracted from).
-  const docId = uploadedFiles.find((f) => f.documentId && f.status !== "error")?.documentId;
+  // The document whose records are staged in this grid. MetadataForm tags the
+  // extraction source (extractedRecordsDocId); before extraction runs the grid
+  // falls back to the first staged upload that is not committed yet — so
+  // committing one file advances the batch to the next instead of dead-ending.
+  const targetDocId =
+    extractedRecordsDocId ??
+    uploadedFiles.find(
+      (f) =>
+        f.documentId &&
+        f.status !== "error" &&
+        !committedDocIds.includes(f.documentId),
+    )?.documentId ??
+    null;
+  const alreadyCommitted = targetDocId
+    ? committedDocIds.includes(targetDocId)
+    : false;
 
   const handleLocalUpdate = (id: string, patch: Partial<ExtractedRecord>) => {
     const value = patch.value;
@@ -78,11 +93,18 @@ export default function VerificationGrid() {
   };
 
   const handleCommit = async () => {
-    // Commit the document whose records are staged in this grid — the first
-    // staged file with a backend id, which is the exact selection MetadataForm
-    // extracted from. The other staged uploads are committed through their own
-    // review pass, never implicitly by this button.
-    const doc = uploadedFiles.find((f) => f.documentId && f.status !== "error");
+    // Commit the document whose records are staged in this grid. MetadataForm
+    // tags the extraction source; before extraction runs, the grid targets the
+    // first staged upload that is not committed yet — so committing one file
+    // advances the batch to the next instead of dead-ending on file one. The
+    // other staged uploads are committed through their own review pass, never
+    // implicitly by this button.
+    const doc = uploadedFiles.find(
+      (f) =>
+        f.documentId &&
+        f.status !== "error" &&
+        !committedDocIds.includes(f.documentId),
+    );
     if (!doc?.documentId) return;
     setCommitting(true);
     setCommitError(null);
@@ -94,7 +116,7 @@ export default function VerificationGrid() {
       // fake success.
       markAllVerified();
       updateFileStatus(doc.id, "committed");
-      setCommitted(true);
+      markDocCommitted(doc.documentId);
       // Re-sync statuses from the server: flagged rows were auto-accepted by
       // HITL_AUTO_RESOLVE during the commit (or the request would have 400'd),
       // so the backend is the source of truth for what actually got committed.
@@ -108,7 +130,7 @@ export default function VerificationGrid() {
       if (isNetworkError(err)) {
         // Backend unreachable → keep the flow demoable offline.
         markAllVerified();
-        setCommitted(true);
+        markDocCommitted(doc.documentId);
       } else {
         console.error("Failed to commit batch:", err);
         setCommitError(
@@ -191,11 +213,11 @@ export default function VerificationGrid() {
         </div>
         <button
           onClick={handleCommit}
-          disabled={committing || committed || !docId}
+          disabled={committing || alreadyCommitted || !targetDocId}
           className="btn-pill !px-4 !py-2 !text-xs"
         >
           <CheckCircle2 className="h-3.5 w-3.5" />
-          {committed
+          {alreadyCommitted
             ? "Batch committed"
             : committing
               ? "Committing…"

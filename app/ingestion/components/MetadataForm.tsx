@@ -63,6 +63,8 @@ export default function MetadataForm() {
   const uploadedFiles = usePortalStore((s) => s.uploadedFiles);
   const extractedRecords = usePortalStore((s) => s.extractedRecords);
   const setExtractedRecords = usePortalStore((s) => s.setExtractedRecords);
+  const committedDocIds = usePortalStore((s) => s.committedDocIds);
+  const setExtractedRecordsDocId = usePortalStore((s) => s.setExtractedRecordsDocId);
   const [notice, setNotice] = useState<string | null>(null);
   const [extracting, setExtracting] = useState(false);
 
@@ -70,10 +72,20 @@ export default function MetadataForm() {
 
   const handleExtract = async () => {
     // Same selection rule as the verification grid's commit: the first staged
-    // upload with a backend document id (skips errored rows).
-    const target = uploadedFiles.find((f) => f.documentId && f.status !== "error");
+    // upload with a backend document id that is not committed yet (skips
+    // errored rows) — committing one file advances extraction to the next.
+    const target = uploadedFiles.find(
+      (f) =>
+        f.documentId &&
+        f.status !== "error" &&
+        !committedDocIds.includes(f.documentId),
+    );
     if (!target?.documentId) {
-      setNotice("Stage a document first — the upload must finish before extraction can run.");
+      setNotice(
+        committedDocIds.length > 0
+          ? "All staged documents are committed. Upload more files to continue."
+          : "Stage a document first — the upload must finish before extraction can run.",
+      );
       return;
     }
     setExtracting(true);
@@ -89,6 +101,9 @@ export default function MetadataForm() {
       // single fetch that often returned an empty grid.
       const records = await pollRecords(target.documentId);
       setExtractedRecords(records as ExtractedRecord[]);
+      // Tag the source document so the verification grid commits exactly
+      // these records (not whichever file happens to be first in the list).
+      setExtractedRecordsDocId(target.documentId);
       setNotice(`Extraction complete — ${records.length} records staged for review.`);
     } catch (err) {
       console.error("Extraction / metadata update failed:", err);

@@ -339,6 +339,25 @@ export interface ReportCitationDto {
   quote?: string | null;
 }
 
+export interface ReportTableDto {
+  title: string;
+  columns: string[];
+  rows: string[][];
+  note?: string | null;
+}
+export interface ReportChartSeriesDto {
+  label: string;
+  value: number;
+  unit?: string | null;
+}
+export interface ReportChartDto {
+  title: string;
+  kind: string;
+  unit?: string | null;
+  series: ReportChartSeriesDto[];
+  note?: string | null;
+}
+
 export interface ReportOut {
   id: string;
   report_type: string;
@@ -346,6 +365,8 @@ export interface ReportOut {
   preamble: string;
   sections: ReportSectionDto[];
   key_figures: ReportKeyFigureDto[];
+  tables?: ReportTableDto[];
+  charts?: ReportChartDto[];
   citations: ReportCitationDto[];
   generated_at: string;
   compile_seconds: number;

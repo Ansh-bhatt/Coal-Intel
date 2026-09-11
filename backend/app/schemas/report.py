@@ -39,6 +39,41 @@ class ReportKeyFigure(BaseModel):
     value: str
 
 
+class ReportTable(BaseModel):
+    """A structured data table rendered inside the report.
+
+    Rows come from the human-verified extraction grid of the committed
+    documents, so every cell traces back to a reviewed record.
+    """
+
+    title: str
+    columns: list[str]
+    rows: list[list[str]]
+    note: str | None = None
+
+
+class ReportChartSeries(BaseModel):
+    """One bar in a report chart: a label and its numeric value."""
+
+    label: str
+    value: float
+    unit: str | None = None
+
+
+class ReportChart(BaseModel):
+    """Numeric series rendered as a horizontal bar chart in report outputs.
+
+    ``unit`` pins the whole series to one unit of measure — figures in MT are
+    never charted on the same axis as metres.
+    """
+
+    title: str
+    kind: str = Field(default="bar", description="Renderer hint: horizontal bar")
+    unit: str | None = None
+    series: list[ReportChartSeries]
+    note: str | None = None
+
+
 class ReportOut(BaseModel):
     id: str
     report_type: str
@@ -46,6 +81,8 @@ class ReportOut(BaseModel):
     preamble: str
     sections: list[ReportSection]
     key_figures: list[ReportKeyFigure]
+    tables: list[ReportTable] = []
+    charts: list[ReportChart] = []
     citations: list[ReportCitation]
     generated_at: datetime
     compile_seconds: float = 0.0

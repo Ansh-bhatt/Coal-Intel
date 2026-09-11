@@ -18,10 +18,6 @@ class FakeChunk:
         self.chunk_text = text
 
 
-def _reset_markers():
-    rs._CITATION_MARKERS = {}
-
-
 PROSE = (
     "The Gurwani block has an area of about 19.08 sq.km. "
     "Drilling of approximately 4950m in 9 boreholes has been proposed."
@@ -29,7 +25,6 @@ PROSE = (
 
 
 def test_clean_lead_keeps_real_prose():
-    _reset_markers()
     assert rs._clean_lead(PROSE.split(". ")[0] + ".") == (
         "The Gurwani block has an area of about 19.08 sq.km."
     )
@@ -68,7 +63,6 @@ def test_is_informative_skips_boilerplate():
 
 
 def test_extractive_findings_are_cited_and_capped():
-    _reset_markers()
     chunks = [
         FakeChunk("c1", "d1", 3, PROSE),
         FakeChunk("c2", "d1", 4, "The seam attains a thickness of 4.20 m with an "
@@ -76,7 +70,9 @@ def test_extractive_findings_are_cited_and_capped():
         FakeChunk("c3", "d2", 2, "Overburden removal during the year was 18.40 Mcum "
                                  "and dispatch achieved the stated target."),
     ]
-    findings = rs._extractive_findings(chunks, per_doc_cap=1)
+    # Markers are request-local since the concurrent-report fix — pass a
+    # fresh mapping the way compose_report does.
+    findings = rs._extractive_findings(chunks, {}, per_doc_cap=1)
     assert len(findings) == 2  # one per document
     assert all(f.endswith("]") and "[" in f for f in findings)
     assert any("19.08 sq.km" in f for f in findings)
@@ -96,9 +92,8 @@ def test_extract_key_figures_deduplicates_and_caps():
 
 def test_compose_report_sections_receive_citation_markers():
     """The section planner must keep every finding's [n] marker intact."""
-    _reset_markers()
     chunks = [FakeChunk(f"c{i}", "d1", i + 1, PROSE) for i in range(4)]
-    findings = rs._extractive_findings(chunks, per_doc_cap=12)
+    findings = rs._extractive_findings(chunks, {}, per_doc_cap=12)
     spec = rs.REPORT_TYPE_SPECS[rs.DEFAULT_REPORT_TYPE]
     buckets: list[list[str]] = [[] for _ in spec["sections"]]
     for i, finding in enumerate(findings):

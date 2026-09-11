@@ -28,19 +28,28 @@ from app.core.config import get_settings
 from app.models.document import Document
 from app.models.extraction import ChunkEmbedding
 from app.schemas.report import (
+    ReportChart,
+    ReportChartSeries,
     ReportCitation,
     ReportKeyFigure,
     ReportOut,
     ReportRequest,
     ReportSection,
+    ReportTable,
 )
 from app.services.llm_client import post_chat_completion
 
 settings = get_settings()
 
 # Per-report-section retrieval size (spread across the scoped corpus).
-CHUNKS_PER_SECTION = 6
-MAX_CITATIONS = 12
+CHUNKS_PER_SECTION = 8
+MAX_CITATIONS = 16
+# Composition targets: findings compiled per report (extractive mode takes up
+# to two sentences per evidence chunk, LLM mode CHUNKS_PER_SECTION).
+TARGET_FINDINGS = 16
+# Data-table construction caps (verified extract rows pulled per report).
+MAX_TABLES = 4
+MAX_TABLE_ROWS = 30
 
 REPORT_TYPE_SPECS: dict[str, dict] = {
     "geological_brief": {
@@ -285,17 +294,29 @@ async def _llm_findings(
 
 
 def _extractive_findings(
-    chunks: list[ChunkEmbedding], per_doc_cap: int = 3
+    chunks: list[ChunkEmbedding],
+    markers: dict[str, str],
+    per_doc_cap: int = 4,
+    per_chunk_cap: int = 2,
+    target: int = TARGET_FINDINGS,
 ) -> list[str]:
     """Deterministic offline composition: pick informative sentences,
-    de-duplicate, and cap per document so one report can't monopolise."""
+    de-duplicate, and cap per document/chunk so no single source
+    monopolises the report."""
     seen: set[str] = set()
     per_doc: dict[str, int] = {}
+    per_chunk: dict[str, int] = {}
     findings: list[str] = []
     for chunk in chunks:
-        if per_doc.get(chunk.document_id, 0) >= per_doc_cap:
-            continue
         for sentence in _split_sentences(chunk.chunk_text):
+            # The per-document cap is checked per sentence, not just when the
+            # chunk starts — otherwise the first chunk of a document could add
+            # up to ``per_chunk_cap`` findings before the gate re-runs and
+            # exceed the cap ("no single source monopolises the report").
+            if per_doc.get(chunk.document_id, 0) >= per_doc_cap:
+                break
+            if per_chunk.get(chunk.id, 0) >= per_chunk_cap:
+                break
             cleaned = _clean_lead(sentence)
             if cleaned is None or not _is_informative(cleaned):
                 continue
@@ -303,52 +324,175 @@ def _extractive_findings(
             if normalized in seen:
                 continue
             seen.add(normalized)
-            findings.append(f"{_compress(cleaned)} [{_marker(chunk)}]")
+            findings.append(f"{_compress(cleaned)} [{_marker(chunk, markers)}]")
             per_doc[chunk.document_id] = per_doc.get(chunk.document_id, 0) + 1
-            break
-        if len(findings) >= CHUNKS_PER_SECTION * 2:
-            break
+            per_chunk[chunk.id] = per_chunk.get(chunk.id, 0) + 1
+            if len(findings) >= target:
+                return findings
     return findings
 
 
-_CITATION_MARKERS: dict[str, str] = {}
+def _marker(chunk: ChunkEmbedding, markers: dict[str, str]) -> str:
+    """Citation marker for a chunk, assigned in first-touch order.
+
+    The mapping is created per ``compose_report`` call (request-local). The
+    previous module-level global was shared between concurrent requests and
+    could interleave citation numbering across two compiling reports.
+    """
+    return markers.setdefault(chunk.id, str(len(markers) + 1))
 
 
-def _marker(chunk: ChunkEmbedding) -> str:
-    """Citation markers are assigned per chunk id in ``compose_report``."""
-    return _CITATION_MARKERS.setdefault(
-        chunk.id, str(len(_CITATION_MARKERS) + 1)
-    )
+# Quantity pattern: a number (with optional thousands separators / decimals)
+# followed by a mining-report unit.
+_KEY_FIGURE_PATTERN = re.compile(
+    r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>%|MT|Mt|Mcum|BCM|LCM|km|sq\.?\s?km|m\b|tonnes|boreholes?|"
+    r"holes?|seams?|MW|crores?|lakh|INR|Rs\.?|metres|sq km)",
+)
 
 
 def _extract_key_figures(chunks: list[ChunkEmbedding]) -> list[ReportKeyFigure]:
-    """Pull quotable quantities (numbers + units) out of the evidence."""
-    pattern = re.compile(
-        r"(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
-        r"(?P<unit>%|MT|Mt|Mcum|BCM|LCM|km|sq\.?\s?km|m\b|tonnes|boreholes?|"
-        r"holes?|seams?|MW|crores?|lakh|INR|Rs\.?|metres|sq km)",
-    )
+    """Pull quotable quantities (numbers + units) out of the evidence.
+
+    Every figure keeps a human-readable context label — the tail of the
+    sentence it appears in (``…drilling of`` → ``4950 m``) — instead of a bare
+    "From corpus" tag, so figures can be quoted and charted meaningfully.
+    """
     figures: list[ReportKeyFigure] = []
     seen: set[str] = set()
     for chunk in chunks:
-        for match in pattern.finditer(chunk.chunk_text):
-            value = match.group("value")
-            unit = re.sub(r"\s+", " ", match.group("unit")).strip()
-            figure = f"{value} {unit}"
-            if figure in seen or len(figure) > 24:
-                continue
-            seen.add(figure)
-            figures.append(ReportKeyFigure(label="From corpus", value=figure))
-            if len(figures) >= 6:
-                return figures
+        for sentence in _split_sentences(chunk.chunk_text):
+            for match in _KEY_FIGURE_PATTERN.finditer(sentence):
+                value = match.group("value")
+                unit = re.sub(r"\s+", " ", match.group("unit")).strip()
+                figure = f"{value} {unit}"
+                if figure in seen or len(figure) > 24:
+                    continue
+                label = re.sub(r"\s+", " ", sentence[: match.start()].strip(" -:—,;"))
+                if len(label) > 60:
+                    label = label[-60:]
+                    if not label.startswith(" "):
+                        # The 60-char cut landed mid-word ("…The Fi|nal Explora…")
+                        # — drop the partial first token so the label starts on
+                        # a whole word instead of a fragment.
+                        first_space = label.find(" ")
+                        if first_space != -1:
+                            label = label[first_space + 1 :]
+                    label = label.strip()
+                if len(label) < 3:
+                    label = "From corpus"
+                seen.add(figure)
+                figures.append(ReportKeyFigure(label=label, value=figure))
+                if len(figures) >= 10:
+                    return figures
     return figures
 
 
+async def _build_tables(
+    db: AsyncSession, docs: list[Document]
+) -> list[ReportTable]:
+    """Structured data tables from the verified extraction grid.
+
+    The HITL-committed ``extracted_records`` rows are the most trustworthy
+    structured data in the system (human-corrected where needed), so they
+    become real tables in the report instead of prose bullets.
+    """
+    from app.models.extraction import ExtractedRecord
+
+    tables: list[ReportTable] = []
+    for doc in docs[:MAX_TABLES]:
+        rows = (
+            (
+                await db.execute(
+                    select(ExtractedRecord).where(
+                        ExtractedRecord.document_id == doc.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not rows:
+            continue
+        table_rows: list[list[str]] = [
+            [
+                r.key[:60],
+                r.value[:60],
+                f"{round(r.confidence * 100)}%",
+                r.status,
+            ]
+            for r in rows[:MAX_TABLE_ROWS]
+        ]
+        note = (
+            f"Showing {MAX_TABLE_ROWS} of {len(rows)} extracted records."
+            if len(rows) > MAX_TABLE_ROWS
+            else None
+        )
+        tables.append(
+            ReportTable(
+                title=f"Verified data extract — {doc.file_name}",
+                columns=["Parameter", "Value", "Confidence", "Status"],
+                rows=table_rows,
+                note=note,
+            )
+        )
+    return tables
+
+
+def _parse_figure(figure: str) -> tuple[float, str] | None:
+    """``"4,950.5 MT"`` → ``(4950.5, "MT")``; ``None`` when not numeric."""
+    parts = figure.strip().rsplit(" ", 1)
+    if not parts:
+        return None
+    unit = parts[-1].strip()
+    numeric = parts[0].replace(",", "") if len(parts) > 1 else parts[0]
+    try:
+        return float(numeric), unit
+    except ValueError:
+        return None
+
+
+def _build_chart(key_figures: list[ReportKeyFigure]) -> list[ReportChart]:
+    """Horizontal bar-chart series from the numeric key figures.
+
+    Figures are grouped by unit and the unit with the most members is
+    charted — comparing metres against MT on one axis is meaningless.
+    """
+    by_unit: dict[str, list[ReportChartSeries]] = {}
+    for fig in key_figures:
+        parsed = _parse_figure(fig.value)
+        if parsed is None:
+            continue
+        value, unit = parsed
+        by_unit.setdefault(unit, []).append(
+            ReportChartSeries(label=fig.label[:60], value=value, unit=unit)
+        )
+    if not by_unit:
+        return []
+    best_unit = max(by_unit, key=lambda u: len(by_unit[u]))
+    series = by_unit[best_unit][:8]
+    if len(series) < 2:
+        return []
+    return [
+        ReportChart(
+            title=f"Key figures ({best_unit})",
+            kind="bar",
+            unit=best_unit,
+            series=series,
+            note=(
+                f"{len(by_unit[best_unit])} figures in {best_unit} compiled "
+                "from the committed corpus; other units are listed under "
+                "Key Figures."
+            ),
+        )
+    ]
+
+
 async def compose_report(db: AsyncSession, request: ReportRequest) -> ReportOut:
-    """Build the full report: docs → evidence → findings → citations."""
+    """Build the report: docs → evidence → findings → tables → citations."""
     started = time.perf_counter()
-    global _CITATION_MARKERS
-    _CITATION_MARKERS = {}
+    # Request-local citation numbering (see _marker) — safe under concurrency.
+    markers: dict[str, str] = {}
 
     report_type = (
         request.report_type
@@ -371,6 +515,8 @@ async def compose_report(db: AsyncSession, request: ReportRequest) -> ReportOut:
             ),
             sections=[],
             key_figures=[],
+            tables=[],
+            charts=[],
             citations=[],
             generated_at=datetime.now(timezone.utc),
             compile_seconds=round(time.perf_counter() - started, 2),
@@ -386,12 +532,14 @@ async def compose_report(db: AsyncSession, request: ReportRequest) -> ReportOut:
     composition = "llm" if findings else "extractive"
     if not findings:
         # Spread the evidence budget across the scoped documents: with a
-        # single-document scope a fixed cap of 3 would starve the report,
-        # while a wide scope still keeps any one source from monopolising it.
+        # single-document scope a fixed cap would starve the report, while a
+        # wide scope still keeps any one source from monopolising it.
         scope_count = len({c.document_id for c in chunks}) or 1
         target = CHUNKS_PER_SECTION * 2
-        per_doc_cap = max(3, -(-target // scope_count))
-        findings = _extractive_findings(chunks, per_doc_cap=per_doc_cap) or [
+        per_doc_cap = max(4, -(-target // scope_count))
+        findings = _extractive_findings(
+            chunks, markers, per_doc_cap=per_doc_cap, target=TARGET_FINDINGS
+        ) or [
             "The selected scope contained no machine-extractable findings. "
             "Verify extraction in the Ingestion Hub and re-commit."
         ]
@@ -400,7 +548,7 @@ async def compose_report(db: AsyncSession, request: ReportRequest) -> ReportOut:
     citations: list[ReportCitation] = []
     marker_to_citation: dict[str, ReportCitation] = {}
     for chunk in chunks:
-        number = _marker(chunk)
+        number = _marker(chunk, markers)
         if number in marker_to_citation:
             continue
         citation = ReportCitation(
@@ -438,6 +586,35 @@ async def compose_report(db: AsyncSession, request: ReportRequest) -> ReportOut:
             )
         )
 
+    # Data tables from the verified extraction grid + a chart series built
+    # from the numeric key figures (both render in the UI and both exports).
+    tables = await _build_tables(db, docs)
+    key_figures = _extract_key_figures(chunks)
+    charts = _build_chart(key_figures)
+
+    # Methodology & traceability appendix — scope, composition mode, and how
+    # to resolve the [n] markers (the audit trail for every statement).
+    scope_lines = [
+        f"- {d.file_name} · "
+        f"{d.subsidiary.name if d.subsidiary else 'unassigned'}"
+        f" · {d.category or 'uncategorised'} · {_fiscal_year_of(d)}"
+        for d in docs
+    ]
+    sections.append(
+        ReportSection(
+            heading="Methodology & Traceability",
+            body=(
+                f"- Evidence base: {len(docs)} committed document(s), "
+                f"{len(chunks)} evidence chunks, composed via the "
+                f"{composition} engine.\n"
+                + "\n".join(scope_lines)
+                + "\n- Every statement carries a [n] marker resolvable to a "
+                "document and page in the Sources list; structured figures "
+                "come from the human-verified extraction grid (Ingestion Hub)."
+            ),
+        )
+    )
+
     scope = topic or ", ".join(d.file_name for d in docs[:2]) + (
         f" (+{len(docs) - 2} more)" if len(docs) > 2 else ""
     )
@@ -458,7 +635,9 @@ async def compose_report(db: AsyncSession, request: ReportRequest) -> ReportOut:
         title=title,
         preamble=preamble,
         sections=sections,
-        key_figures=_extract_key_figures(chunks),
+        key_figures=key_figures,
+        tables=tables,
+        charts=charts,
         citations=citations,
         generated_at=datetime.now(timezone.utc),
         compile_seconds=round(time.perf_counter() - started, 2),

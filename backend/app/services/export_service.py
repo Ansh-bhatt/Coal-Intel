@@ -5,9 +5,21 @@ import io
 from docx import Document as DocxDocument
 from docx.shared import Pt
 from reportlab.pdfgen import canvas as pdf_canvas
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.graphics.shapes import Drawing, Rect, String
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.platypus import (
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from app.schemas.draft import DraftOut
+from app.schemas.report import ReportChart, ReportOut, ReportTable
 
 # Bottom margin: content never renders below this line — long drafts roll
 # onto a continuation page instead of running off the sheet (previously the
@@ -152,160 +164,229 @@ def export_draft_docx_bytes(draft: DraftOut) -> bytes:
 # ---------------------------------------------------------------------------
 # Report Generation Studio exports (stateless: renders the posted report)
 # ---------------------------------------------------------------------------
-def export_report_pdf_bytes(report: "ReportOut") -> bytes:
-    """Render a generated report to a PDF (reportlab), paginating on overflow."""
+
+
+def _report_styles() -> dict[str, ParagraphStyle]:
+    """Paragraph styles shared by the report PDF renderer."""
+    body = ParagraphStyle(
+        "ReportBody", fontName="Helvetica", fontSize=10, leading=14,
+        textColor=colors.HexColor("#111111"),
+    )
+    bullet = ParagraphStyle("ReportBullet", parent=body, leftIndent=16, bulletIndent=6)
+    muted = ParagraphStyle(
+        "ReportMuted", fontName="Helvetica", fontSize=9, leading=13,
+        textColor=colors.HexColor("#555555"),
+    )
+    heading = ParagraphStyle(
+        "ReportHeading", fontName="Helvetica-Bold", fontSize=12.5, leading=16,
+        textColor=colors.HexColor("#111111"), spaceBefore=6,
+    )
+    subheading = ParagraphStyle(
+        "ReportSubHeading", fontName="Helvetica-Bold", fontSize=10.5, leading=14,
+        textColor=colors.HexColor("#111111"),
+    )
+    cell = ParagraphStyle("ReportCell", parent=body, fontSize=8, leading=10)
+    head = ParagraphStyle(
+        "ReportHead", parent=cell, fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#333333"),
+    )
+    fig = ParagraphStyle("ReportFig", parent=body, fontSize=9, leading=12)
+    title = ParagraphStyle(
+        "ReportTitle", fontName="Helvetica-Bold", fontSize=16, leading=20,
+        textColor=colors.HexColor("#111111"),
+    )
+    return {
+        "body": body, "bullet": bullet, "muted": muted, "heading": heading,
+        "subheading": subheading, "cell": cell, "head": head, "fig": fig,
+        "title": title,
+    }
+
+
+def _escape(value: str) -> str:
+    """Escape text for reportlab Paragraph (mini-XML markup)."""
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _bullet_flowables(body: str, styles) -> list:
+    """Turn a section body into wrapped paragraphs / bullet points."""
+    flows: list = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            flows.append(Spacer(1, 4))
+            continue
+        if line.startswith(("-", "•")):
+            flows.append(Paragraph(
+                _escape(line.lstrip("-• ")), styles["bullet"], bulletText="•"
+            ))
+        else:
+            flows.append(Paragraph(_escape(line), styles["body"]))
+    return flows
+
+
+def _bar_chart_drawing(chart: ReportChart) -> Drawing:
+    """Render a chart's series as labelled horizontal bars (vector)."""
+    series = chart.series
+    max_value = max((point.value for point in series), default=0.0) or 1.0
+    bar_h, gap, label_w, value_w, plot_w = 11, 7, 200, 70, 160
+    width = label_w + plot_w + value_w
+    height = len(series) * (bar_h + gap) + 8
+    drawing = Drawing(width, height)
+    y = height - bar_h - 2
+    for point in series:
+        drawing.add(String(
+            0, y + 2, point.label[:46], fontName="Helvetica", fontSize=7.5,
+            fillColor=colors.HexColor("#222222"),
+        ))
+        bar_w = max(2.0, (point.value / max_value) * plot_w)
+        drawing.add(Rect(
+            label_w, y, bar_w, bar_h,
+            fillColor=colors.HexColor("#0e7490"), strokeColor=None,
+        ))
+        unit = f" {chart.unit}" if chart.unit else ""
+        drawing.add(String(
+            label_w + bar_w + 5, y + 2, f"{point.value:g}{unit}",
+            fontName="Helvetica-Bold", fontSize=7.5,
+            fillColor=colors.HexColor("#0e7490"),
+        ))
+        y -= bar_h + gap
+    return drawing
+
+
+def _table_flowables(table: ReportTable, styles) -> list:
+    """A report data table as a real platypus Table (grid, repeating header,
+    zebra rows) — cells wrap instead of overflowing the page."""
+    flows: list = [Paragraph(_escape(table.title), styles["subheading"]), Spacer(1, 4)]
+    data: list = [[Paragraph(_escape(c), styles["head"]) for c in table.columns]]
+    for row in table.rows:
+        padded = list(row) + [""] * (len(table.columns) - len(row))
+        data.append([
+            Paragraph(_escape(str(c)[:200]), styles["cell"])
+            for c in padded[: len(table.columns)]
+        ])
+    grid = Table(data, repeatRows=1, hAlign="LEFT")
+    grid.setStyle(TableStyle([
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#333333")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f4f2")]),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9c9c4")),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    flows.append(grid)
+    if table.note:
+        flows.append(Spacer(1, 3))
+        flows.append(Paragraph(_escape(table.note), styles["muted"]))
+    flows.append(Spacer(1, 10))
+    return flows
+
+
+def export_report_pdf_bytes(report: ReportOut) -> bytes:
+    """Render a generated report to a paginated PDF: header, narrative
+    sections, real data tables, a key-figures bar chart and the numbered
+    sources — everything the Report Studio preview shows."""
     buf = io.BytesIO()
-    page = pdf_canvas.Canvas(buf, pagesize=A4)
-    width, height = A4
-    margin = 54
-    y = height - margin
-    page.setTitle(report.title)
-
-    def new_page() -> None:
-        nonlocal y
-        page.showPage()
-        y = height - margin
-        page.setFont("Helvetica-Oblique", 8)
-        page.setFillColorRGB(0.4, 0.4, 0.4)
-        page.drawString(margin, y, f"{report.title} (continued)")
-        y -= 24
-        page.setFillColorRGB(0.067, 0.067, 0.067)
-
-    def ensure_space(needed: float) -> None:
-        if y - needed < BOTTOM_MARGIN:
-            new_page()
-
-    def draw_wrapped(text: str, size: int = 10, indent: int = 0) -> None:
-        nonlocal y
-        page.setFont("Helvetica", size)
-        page.setFillColorRGB(0.067, 0.067, 0.067)
-        max_width = width - 2 * margin - indent
-        line = ""
-        for word in text.split():
-            test = f"{line} {word}".strip()
-            if page.stringWidth(test, "Helvetica", size) > max_width:
-                ensure_space(14)
-                page.setFont("Helvetica", size)
-                page.setFillColorRGB(0.067, 0.067, 0.067)
-                page.drawString(margin + indent, y, line)
-                y -= 14
-                line = word
-            else:
-                line = test
-        if line:
-            ensure_space(14)
-            page.setFont("Helvetica", size)
-            page.setFillColorRGB(0.067, 0.067, 0.067)
-            page.drawString(margin + indent, y, line)
-            y -= 14
-
-    page.setFont("Helvetica-Bold", 16)
-    page.setFillColorRGB(0.067, 0.067, 0.067)
-    page.drawString(margin, y, report.title[:80])
-    y -= 20
-    page.setFont("Helvetica", 9)
-    page.setFillColorRGB(0.4, 0.4, 0.4)
-    page.drawString(
-        margin,
-        y,
-        "CIL Report Studio (compiled from the committed corpus)",
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4, leftMargin=54, rightMargin=54, topMargin=54,
+        bottomMargin=64, title=report.title[:120] or "CIL Report",
     )
-    y -= 14
-    page.drawString(
-        margin,
-        y,
+    styles = _report_styles()
+    story: list = []
+
+    story.append(Paragraph(_escape(report.title[:110] or "CIL Report"), styles["title"]))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        "CIL Report Studio — compiled from the committed corpus", styles["muted"]
+    ))
+    story.append(Paragraph(
         f"Generated {report.generated_at:%d %b %Y %H:%M} UTC · "
-        f"{report.source_count} cited sources · compiled in {report.compile_seconds:.1f}s",
-    )
-    y -= 14
-    page.setStrokeColorRGB(0.85, 0.85, 0.85)
-    page.line(margin, y, width - margin, y)
-    y -= 18
-    page.setFillColorRGB(0.067, 0.067, 0.067)
-
-    draw_wrapped(report.preamble, 10)
-    y -= 8
+        f"{report.source_count} cited sources · compiled in "
+        f"{report.compile_seconds:.1f}s",
+        styles["muted"],
+    ))
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(_escape(report.preamble), styles["body"]))
+    story.append(Spacer(1, 10))
 
     for section in report.sections:
-        ensure_space(46)
-        page.setFont("Helvetica-Bold", 12)
-        page.setFillColorRGB(0.067, 0.067, 0.067)
-        page.drawString(margin, y, section.heading[:90])
-        y -= 18
-        for raw_line in section.body.splitlines():
-            line = raw_line.strip()
-            if not line:
-                y -= 5
-                continue
-            if line.startswith(("-", "•")):
-                ensure_space(14)
-                page.setFont("Helvetica", 10)
-                page.drawString(margin + 2, y, "•")
-                draw_wrapped(line.lstrip("-• ").strip(), 10, indent=14)
-            else:
-                draw_wrapped(line, 10)
-        y -= 8
+        heading_block = [
+            Paragraph(_escape(section.heading), styles["heading"]), Spacer(1, 4)
+        ]
+        body_flows = _bullet_flowables(section.body, styles)
+        if body_flows:
+            # Keep the heading on the same page as its first paragraph.
+            story.append(KeepTogether(heading_block + body_flows[:1]))
+            story.extend(body_flows[1:])
+        else:
+            story.extend(heading_block)
+        story.append(Spacer(1, 10))
+
+    for table in report.tables:
+        story.extend(_table_flowables(table, styles))
+
+    for chart in report.charts:
+        story.append(Paragraph(_escape(chart.title), styles["subheading"]))
+        story.append(Spacer(1, 4))
+        story.append(_bar_chart_drawing(chart))
+        if chart.note:
+            story.append(Spacer(1, 3))
+            story.append(Paragraph(_escape(chart.note), styles["muted"]))
+        story.append(Spacer(1, 10))
 
     if report.key_figures:
-        ensure_space(40)
-        page.setFont("Helvetica-Bold", 12)
-        page.setFillColorRGB(0.067, 0.067, 0.067)
-        page.drawString(margin, y, "Key Figures")
-        y -= 18
-        for fig in report.key_figures:
-            ensure_space(15)
-            page.setFont("Helvetica-Bold", 10)
-            page.setFillColorRGB(0.067, 0.067, 0.067)
-            label = f"{fig.label}:"
-            page.drawString(margin + 8, y, label[:60])
-            label_width = page.stringWidth(label[:60], "Helvetica-Bold", 10)
-            page.setFont("Helvetica", 10)
-            page.drawString(margin + 14 + label_width, y, fig.value[:60])
-            y -= 15
-        y -= 8
-
-    ensure_space(50)
-    page.setStrokeColorRGB(0.85, 0.85, 0.85)
-    page.line(margin, y, width - margin, y)
-    y -= 16
-    page.setFont("Helvetica-Bold", 9)
-    page.setFillColorRGB(0.4, 0.4, 0.4)
-    page.drawString(margin, y, "Sources")
-    y -= 14
-    for i, citation in enumerate(report.citations, start=1):
-        ensure_space(13)
-        page.setFont("Helvetica", 8)
-        page.setFillColorRGB(0.4, 0.4, 0.4)
-        page.drawString(
-            margin, y, f"[{i}] {citation.documentName} — p.{citation.pageNumber}"
+        story.append(Paragraph("Key Figures", styles["subheading"]))
+        story.append(Spacer(1, 4))
+        fig_rows = [
+            [
+                Paragraph(_escape(f.label[:70]), styles["fig"]),
+                Paragraph(_escape(f.value), styles["fig"]),
+            ]
+            for f in report.key_figures
+        ]
+        fig_table = Table(
+            [["Parameter", "Value"], *fig_rows],
+            colWidths=[330, 130], repeatRows=1, hAlign="LEFT",
         )
-        y -= 12
+        fig_table.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#333333")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f4f2")]),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9c9c4")),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(fig_table)
+        story.append(Spacer(1, 10))
 
-    page.showPage()
-    page.save()
+    if report.citations:
+        story.append(Paragraph("Sources — document · page", styles["subheading"]))
+        story.append(Spacer(1, 4))
+        for i, citation in enumerate(report.citations, start=1):
+            quote = f" “{_escape(citation.quote[:100])}…”" if citation.quote else ""
+            story.append(Paragraph(
+                f"[{i}] {_escape(citation.documentName)} — "
+                f"p.{citation.pageNumber}{quote}",
+                styles["muted"],
+            ))
+
+    doc.build(story)
     return buf.getvalue()
 
 
-def export_report_docx_bytes(report: "ReportOut") -> bytes:
-    """Render a generated report to a .docx (python-docx)."""
+def export_report_docx_bytes(report: ReportOut) -> bytes:
+    """Render a generated report to DOCX: headings, wrapped narrative, real
+    Word tables for the data extracts and text-scale bars for the charts."""
     doc = DocxDocument()
-    doc.add_heading(report.title, level=1)
-
-    subtitle = doc.add_paragraph()
-    run = subtitle.add_run(
-        "CIL Report Studio "
-        "(compiled from the committed corpus)"
+    doc.add_heading(report.title or "CIL Report", level=1)
+    doc.add_paragraph(
+        f"CIL Report Studio — generated "
+        f"{report.generated_at:%d %b %Y %H:%M} UTC · "
+        f"{report.source_count} cited sources · compiled in "
+        f"{report.compile_seconds:.1f}s"
     )
-    run.italic = True
-    run.font.size = Pt(9)
-
-    meta = doc.add_paragraph()
-    run = meta.add_run(
-        f"Generated {report.generated_at:%d %b %Y %H:%M} UTC · "
-        f"{report.source_count} cited sources · compiled in {report.compile_seconds:.1f}s"
-    )
-    run.font.size = Pt(9)
-
     doc.add_paragraph(report.preamble)
 
     for section in report.sections:
@@ -315,20 +396,68 @@ def export_report_docx_bytes(report: "ReportOut") -> bytes:
             if not line:
                 continue
             if line.startswith(("-", "•")):
-                doc.add_paragraph(line.lstrip("-• ").strip(), style="List Bullet")
+                doc.add_paragraph(line.lstrip("-• "), style="List Bullet")
             else:
                 doc.add_paragraph(line)
 
+    for table in report.tables:
+        doc.add_heading(table.title, level=2)
+        grid = doc.add_table(rows=1, cols=len(table.columns))
+        grid.style = "Table Grid"
+        for i, column in enumerate(table.columns):
+            cell = grid.rows[0].cells[i]
+            cell.text = column
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.bold = True
+        for row in table.rows:
+            cells = grid.add_row().cells
+            for i in range(min(len(row), len(table.columns))):
+                cells[i].text = str(row[i])
+        if table.note:
+            note = doc.add_paragraph()
+            run = note.add_run(table.note)
+            run.italic = True
+            run.font.size = Pt(9)
+
+    for chart in report.charts:
+        doc.add_heading(chart.title, level=2)
+        max_value = max((point.value for point in chart.series), default=0.0) or 1.0
+        for point in chart.series:
+            paragraph = doc.add_paragraph()
+            label = paragraph.add_run(f"{point.label[:40]}  ")
+            label.font.size = Pt(9)
+            filled = max(1, round((point.value / max_value) * 28))
+            bar = paragraph.add_run("█" * filled)
+            bar.font.name = "Consolas"
+            bar.font.size = Pt(9)
+            unit = f" {chart.unit}" if chart.unit else ""
+            value = paragraph.add_run(f"  {point.value:g}{unit}")
+            value.font.size = Pt(9)
+        if chart.note:
+            doc.add_paragraph(chart.note)
+
     if report.key_figures:
         doc.add_heading("Key Figures", level=2)
-        for fig in report.key_figures:
-            doc.add_paragraph(f"{fig.label}: {fig.value}", style="List Bullet")
+        figures = doc.add_table(rows=1, cols=2)
+        figures.style = "Table Grid"
+        for i, column in enumerate(["Parameter", "Value"]):
+            cell = figures.rows[0].cells[i]
+            cell.text = column
+            for paragraph in cell.paragraphs:
+                for run in paragraph.runs:
+                    run.bold = True
+        for figure in report.key_figures:
+            cells = figures.add_row().cells
+            cells[0].text = figure.label[:80]
+            cells[1].text = figure.value
 
     if report.citations:
-        doc.add_heading("Sources", level=2)
+        doc.add_heading("Sources — document · page", level=2)
         for i, citation in enumerate(report.citations, start=1):
+            quote = f" “{citation.quote[:100]}…”" if citation.quote else ""
             doc.add_paragraph(
-                f"[{i}] {citation.documentName} — p.{citation.pageNumber}"
+                f"[{i}] {citation.documentName} — p.{citation.pageNumber}{quote}"
             )
 
     buf = io.BytesIO()

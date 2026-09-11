@@ -43,6 +43,14 @@ interface PortalState {
   setExtractedRecords: (records: ExtractedRecord[]) => void;
   updateRecord: (id: string, patch: Partial<ExtractedRecord>) => void;
   markAllVerified: () => void;
+
+  // --- Multi-file batch tracking (ingestion auto-advance) ---
+  /** Backend document ids that have been committed (HITL sign-off done). */
+  committedDocIds: string[];
+  markDocCommitted: (documentId: string) => void;
+  /** Backend document id the staged extractedRecords were extracted from. */
+  extractedRecordsDocId: string | null;
+  setExtractedRecordsDocId: (documentId: string | null) => void;
 }
 
 const LOW_CONFIDENCE_THRESHOLD = 0.85;
@@ -132,6 +140,16 @@ export const usePortalStore = create<PortalState>((set) => ({
         status: "verified",
       })),
     })),
+  committedDocIds: [],
+  markDocCommitted: (documentId) =>
+    set((state) => ({
+      committedDocIds: state.committedDocIds.includes(documentId)
+        ? state.committedDocIds
+        : [...state.committedDocIds, documentId],
+    })),
+  extractedRecordsDocId: null,
+  setExtractedRecordsDocId: (documentId) =>
+    set({ extractedRecordsDocId: documentId }),
 }));
 
 export { LOW_CONFIDENCE_THRESHOLD };

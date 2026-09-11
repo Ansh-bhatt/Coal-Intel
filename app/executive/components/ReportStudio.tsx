@@ -422,6 +422,78 @@ export default function ReportStudio() {
               </div>
             )}
 
+            {/* Data tables — straight from the verified extraction grid */}
+            {report.tables?.map((table) => (
+              <div key={table.title} className="card overflow-x-auto">
+                <h4 className="text-sm font-bold text-slate-800">{table.title}</h4>
+                <table className="mt-3 w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-500">
+                      {table.columns.map((column) => (
+                        <th key={column} className="px-2 py-1.5 font-semibold">
+                          {column}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {table.rows.map((row, i) => (
+                      <tr key={i} className="border-b border-slate-100 odd:bg-slate-50/50">
+                        {row.map((cell, j) => (
+                          <td key={j} className="px-2 py-1.5 text-slate-700">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {table.note && (
+                  <p className="mt-2 text-xs italic text-slate-500">{table.note}</p>
+                )}
+              </div>
+            ))}
+
+            {/* Key-figure charts — numeric series compiled from the corpus */}
+            {report.charts?.map((chart) => {
+              const maxVal = Math.max(...chart.series.map((s) => s.value), 1);
+              return (
+                <div key={chart.title} className="card">
+                  <h4 className="text-sm font-bold text-slate-800">{chart.title}</h4>
+                  <div className="mt-3 space-y-2">
+                    {chart.series.map((point) => (
+                      <div
+                        key={`${point.label}-${point.value}`}
+                        className="flex items-center gap-2 text-xs"
+                      >
+                        <span
+                          className="w-48 truncate text-slate-600"
+                          title={point.label}
+                        >
+                          {point.label}
+                        </span>
+                        <div className="h-3 flex-1 rounded-full bg-slate-100">
+                          <div
+                            className="h-3 rounded-full bg-cyan-700"
+                            style={{
+                              width: `${Math.max(2, (point.value / maxVal) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="w-20 text-right font-bold text-cyan-700">
+                          {point.value}
+                          {chart.unit ? ` ${chart.unit}` : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {chart.note && (
+                    <p className="mt-2 text-xs italic text-slate-500">{chart.note}</p>
+                  )}
+                </div>
+              );
+            })}
+
             {report.citations.length > 0 && (
               <div className="mt-4 border-t border-black/10 pt-3">
                 <p className="mb-2 font-mono text-[9px] uppercase tracking-[0.18em] text-ink/40">
