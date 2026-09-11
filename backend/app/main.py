@@ -21,7 +21,15 @@ from app.api.v1.drafts import router as drafts_router
 from app.api.v1.analytics import router as analytics_router
 from app.api.v1.reports import router as reports_router
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    # Timestamps on application log lines — provider stalls are otherwise
+    # impossible to reconstruct from /tmp/uvicorn.log after the fact.
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+# OpenAI-compatible provider calls log every request at INFO via httpx —
+# keep the application log readable by silencing that per-request chatter.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("coal_intel")
 
 settings = get_settings()

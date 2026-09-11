@@ -34,6 +34,7 @@ from app.schemas.report import (
     ReportRequest,
     ReportSection,
 )
+from app.services.llm_client import post_chat_completion
 
 settings = get_settings()
 
@@ -240,11 +241,9 @@ async def _llm_findings(
     Returns ``None`` when no key is set or the API fails, so the caller can
     fall back to extractive composition (offline-safe).
     """
-    if not settings.openai_api_key:
+    if not settings.chat_api_key_effective:
         return None
     import json as _json
-
-    import httpx
 
     context = "\n\n".join(
         f"[{i + 1}] (doc {c.document_id}, p.{c.page_number}) {c.chunk_text}"
@@ -259,11 +258,9 @@ async def _llm_findings(
         f"Report focus: {focus}\n\nEVIDENCE:\n{context}"
     )
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.openai_base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-                json={
+        content = (
+            await post_chat_completion(
+                {
                     "model": settings.chat_model,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.2,
@@ -271,8 +268,7 @@ async def _llm_findings(
                 },
                 timeout=45,
             )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+        )["choices"][0]["message"]["content"]
         start, end = content.find("{"), content.rfind("}")
         if start == -1 or end <= start:
             return None

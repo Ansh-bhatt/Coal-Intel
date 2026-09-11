@@ -64,7 +64,8 @@ The **Gurwani block** covers about **19.08 sq. km** and is proposed for **G-3 st
 
 **Exploration objectives**: prove the coal seam occurrences across the block, establish their depth continuity and assess the resource potential of the property.
 
-> Compiled from the committed corpus — every figure is traceable to its source page via the citations below.
+> Demo placeholder — shown only when the backend is unreachable; not generated
+> from your corpus.
 `;
 
 export const MOCK_ASSISTANT_RESPONSE = {

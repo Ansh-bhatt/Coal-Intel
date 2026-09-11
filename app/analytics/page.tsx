@@ -118,7 +118,7 @@ export default function AnalyticsPage() {
             })}
           </p>
           <p className="font-mono text-[10px] text-ink/50">
-            CIL · CMPDI Data Intelligence Group
+            Coal-Intel · prototype build
           </p>
         </footer>
       </main>

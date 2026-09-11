@@ -46,6 +46,11 @@ export default function QuerySystemChat() {
   const [fiscalYear, setFiscalYear] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // First-token watchdog: if the engine accepts the request but never streams
+  // anything, recover the composer instead of wedging the tab (empty
+  // "Engine response" card + disabled composer until a manual refresh).
+  const firstDataRef = useRef(false);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const setActiveChatSessionId = usePortalStore((s) => s.setActiveChatSessionId);
 
   useEffect(() => {
@@ -54,7 +59,10 @@ export default function QuerySystemChat() {
   }, [messages]);
 
   useEffect(() => {
-    return () => abortRef.current?.abort();
+    return () => {
+      abortRef.current?.abort();
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    };
   }, []);
 
   const send = useCallback(
@@ -85,9 +93,24 @@ export default function QuerySystemChat() {
       };
       const ctrl = new AbortController();
       abortRef.current = ctrl;
+      firstDataRef.current = false;
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      watchdogRef.current = setTimeout(() => {
+        if (!firstDataRef.current && abortRef.current === ctrl) {
+          ctrl.abort();
+          setStreaming(false);
+          setStreamError(
+            "The query engine accepted the request but did not start answering within 30s. Check the backend (backend/start-backend.sh, log: /tmp/uvicorn.log) and try again.",
+          );
+        }
+      }, 30000);
 
       const handlers = {
         onToken: (token: string) => {
+          if (!firstDataRef.current) {
+            firstDataRef.current = true;
+            if (watchdogRef.current) clearTimeout(watchdogRef.current);
+          }
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -115,6 +138,7 @@ export default function QuerySystemChat() {
           );
         },
         onDone: (messageId: string, streamSessionId?: string) => {
+          if (watchdogRef.current) clearTimeout(watchdogRef.current);
           setStreaming(false);
           // A server-issued session id always wins (the backend echoes the
           // real id in "done"); the offline fallback sends none, keeping the
@@ -124,6 +148,7 @@ export default function QuerySystemChat() {
           setActiveChatSessionId(next ?? null);
         },
         onError: () => {
+          if (watchdogRef.current) clearTimeout(watchdogRef.current);
           setStreaming(false);
           setStreamError(
             "The response engine interrupted the stream. Please try again.",
@@ -134,6 +159,11 @@ export default function QuerySystemChat() {
       try {
         await streamChat(payload, handlers, ctrl.signal);
       } catch (err) {
+        if (watchdogRef.current) clearTimeout(watchdogRef.current);
+        // Watchdog abort: the banner above already recovered the composer —
+        // do not fall through to the offline mock or a doomed retry (the
+        // aborted controller would kill any retried request instantly).
+        if (ctrl.signal.aborted) return;
         // Backend unreachable -> simulated stream keeps the query system
         // demoable offline, mirroring the SSE event cadence.
         if (isNetworkError(err)) {
@@ -142,6 +172,12 @@ export default function QuerySystemChat() {
           } catch {
             setStreaming(false);
           }
+          // The simulated stream above keeps the UI demoable offline, but a
+          // silent mock is indistinguishable from a hang. Always say why the
+          // answer is not a real one.
+          setStreamError(
+            "Query engine unreachable at localhost:8000 — the answer above is simulated demo content, not a real answer. Start the backend (backend/start-backend.sh) and refresh this page.",
+          );
           return;
         }
         // A stale session id (server restarted, DB reset, other device) makes
@@ -158,10 +194,12 @@ export default function QuerySystemChat() {
           try {
             await streamChat(retryPayload, handlers, ctrl.signal);
             return;
-          } catch {
+          } catch (retryErr) {
             setStreaming(false);
             setStreamError(
-              "The query engine could not be reached. Check the API server and try again.",
+              retryErr instanceof ApiError
+                ? retryErr.message
+                : "The query engine could not be reached. Check the API server and try again.",
             );
             return;
           }
@@ -175,8 +213,12 @@ export default function QuerySystemChat() {
           return;
         }
         setStreaming(false);
+        // Surface the backend's actual reason (mid-stream interruption,
+        // stream closed without done, 5xx detail) instead of a generic banner.
         setStreamError(
-          "The query engine could not be reached. Check the API server and try again.",
+          err instanceof ApiError
+            ? err.message
+            : "The query engine could not be reached. Check the API server and try again.",
         );
       }
     },
@@ -308,8 +350,7 @@ export default function QuerySystemChat() {
           </button>
         </form>
         <p className="mt-2 flex items-center justify-center gap-1 font-mono text-[9px] text-ink/35">
-          <CornerDownLeft className="h-3 w-3" /> Enter to send · answers are
-          grounded in committed documents
+          <CornerDownLeft className="h-3 w-3" /> Enter to send
         </p>
       </div>
     </div>

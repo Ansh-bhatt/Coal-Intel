@@ -15,7 +15,7 @@ from app.core.config import get_settings
 from app.db.session import async_session_factory
 from app.models.document import Document
 from app.models.extraction import ExtractedRecord, DocumentPage
-from app.services.ingestion_service import compute_status, extract_document
+from app.services.ingestion_service import compute_status, extract_document_async
 
 logger = logging.getLogger("coal_intel.extraction")
 
@@ -35,7 +35,7 @@ async def run_extraction(document_id: str) -> None:
 
         try:
             path = Path(settings.storage_dir) / doc.storage_path
-            result = extract_document(path, doc.file_type)
+            result = await extract_document_async(path, doc.file_type)
 
             # Persist page text layer.
             for page in result.pages:
@@ -59,9 +59,21 @@ async def run_extraction(document_id: str) -> None:
                     )
                 )
 
-            doc.status = "verified"
+            # Race guard: only flip processing → verified. If the document
+            # already moved on (e.g. another extraction pass had finished and
+            # verified/committed it), never overwrite that state — just
+            # commit the persisted pages/records.
+            await db.refresh(doc)
+            if doc.status == "processing":
+                doc.status = "verified"
+                logger.info("extraction: document %s → verified", document_id)
+            else:
+                logger.info(
+                    "extraction: document %s finished while status=%s — left unchanged",
+                    document_id,
+                    doc.status,
+                )
             await db.commit()
-            logger.info("extraction: document %s → verified", document_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("extraction failed for %s", document_id)
             # Discard any partial pages/records added before the failure —

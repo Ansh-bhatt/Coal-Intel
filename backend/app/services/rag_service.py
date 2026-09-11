@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.models.document import Document
 from app.models.extraction import ChunkEmbedding
 from app.schemas.chat import BoundingBox, CitationOut
+from app.services.llm_client import post_chat_completion, stream_chat_completion
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -90,16 +91,37 @@ async def _api_embedding(client: httpx.AsyncClient, text: str) -> list[float]:
     return resp.json()["data"][0]["embedding"]
 
 
+# Sticky flag: once the embedding API proves unusable within this process
+# (invalid/rotated key, quota exhausted, provider outage), stop calling it so
+# every query doesn't pay a doomed round-trip — and so the corpus never mixes
+# vectors from the API and the local embedder mid-flight.
+_embedding_api_dead = False
+
+
 async def embed_texts(texts: list[str]) -> list[list[float]]:
     """Embed a list of texts, using the API when configured.
 
     Requires both a key and an embedding model: a chat-only provider (e.g.
     OpenRouter) leaves ``EMBEDDING_MODEL`` empty, so retrieval stays on the
     deterministic local embedder instead of calling a missing endpoint.
+
+    An API failure (dead key, 4xx/5xx, timeout) degrades the whole batch to
+    the local embedder instead of crashing callers like seed/commit — after
+    fixing the key, run ``python -m scripts.reembed_corpus`` to rebuild
+    API-grade vectors.
     """
-    if settings.openai_api_key and settings.embedding_model:
-        async with httpx.AsyncClient() as client:
-            return [await _api_embedding(client, t) for t in texts]
+    global _embedding_api_dead
+    if settings.openai_api_key and settings.embedding_model and not _embedding_api_dead:
+        try:
+            async with httpx.AsyncClient() as client:
+                return [await _api_embedding(client, t) for t in texts]
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+            _embedding_api_dead = True
+            logger.exception(
+                "embedding API failed — falling back to the local embedder for "
+                "this process. Check OPENAI_API_KEY / EMBEDDING_MODEL / "
+                "OPENAI_BASE_URL, then re-run `python -m scripts.reembed_corpus`."
+            )
     return [_local_embedding(t) for t in texts]
 
 
@@ -199,8 +221,14 @@ def build_citation(chunk: RetrievedChunk, index: int) -> CitationOut:
 async def generate_answer(
     query: str,
     chunks: list[RetrievedChunk],
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[str, list[CitationOut]]:
-    """Produce a source-cited answer (API-backed or extractive fallback)."""
+    """Produce a source-cited answer (API-backed or extractive fallback).
+
+    ``history`` is the session transcript (role/content dicts, oldest first)
+    so follow-up questions can resolve conversational references; answers
+    stay grounded in the retrieved ``chunks`` only.
+    """
     if not chunks:
         return (
             "I could not find supporting material in the committed documents for "
@@ -209,9 +237,9 @@ async def generate_answer(
         )
     citations = [build_citation(c, i) for i, c in enumerate(chunks)]
 
-    if settings.openai_api_key:
+    if settings.chat_api_key_effective:
         try:
-            return await _llm_answer(query, chunks, citations)
+            return await _llm_answer(query, chunks, citations, history)
         except Exception:
             # Never leave this silent — a dead key/wrong model otherwise looks
             # exactly like "the AI answered" while the extractive fallback runs.
@@ -219,7 +247,9 @@ async def generate_answer(
                 "LLM answer generation failed — falling back to extractive answer"
             )
     else:
-        logger.warning("OPENAI_API_KEY not set — using extractive answer fallback")
+        logger.warning(
+            "no chat API key configured — using extractive answer fallback"
+        )
 
     return _extractive_answer(query, chunks), citations
 
@@ -258,33 +288,138 @@ def _extractive_answer(query: str, chunks: list[RetrievedChunk]) -> str:
     )
 
 
-async def _llm_answer(
-    query: str, chunks: list[RetrievedChunk], citations: list[CitationOut]
-) -> tuple[str, list[CitationOut]]:
+def _build_chat_messages(
+    query: str,
+    chunks: list[RetrievedChunk],
+    history: list[dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    """Assemble the grounded prompt (system rules + trimmed history + query)."""
     context = "\n\n---\n\n".join(
         f"[{i + 1}] {c.document_name} (p.{c.page_number})\n{c.text}"
         for i, c in enumerate(chunks)
     )
     system = (
-        "You are CIL Report Studio, a parliamentary data assistant. "
-        "Answer ONLY from the retrieved source excerpts below. Every factual "
-        "claim must map to one of the bracketed sources. If the excerpts do not "
-        "support an answer, say so explicitly. Never answer from memory."
+        "You are CIL Report Studio, a parliamentary data assistant. For any "
+        "factual claim about the corpus, answer ONLY from the retrieved source "
+        "excerpts below; every such claim must map to one of the bracketed "
+        "sources, and if the excerpts do not support an answer, say so "
+        "explicitly. Never introduce corpus facts from memory. "
+        "Earlier conversation turns are provided for continuity: use them to "
+        "resolve conversational references such as 'it', 'that block', 'my "
+        "previous question' or 'the same figure', and you may restate or "
+        "summarise what was already said in the conversation, but do not "
+        "present anything from those turns as a new corpus fact."
     )
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.openai_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
-            json={
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    # Trim stored turns so a long transcript cannot blow the provider context.
+    for turn in (history or [])[-8:]:
+        content = turn.get("content", "").strip()
+        if content:
+            messages.append(
+                {"role": turn.get("role", "user"), "content": content[:1500]}
+            )
+    messages.append(
+        {"role": "user", "content": f"Query: {query}\n\nSources:\n{context}"}
+    )
+    return messages
+
+
+def _word_deltas(text: str) -> list[str]:
+    """Split text into the word-per-token chunks the SSE layer yields."""
+    words = text.split(" ")
+    return [w + (" " if i < len(words) - 1 else "") for i, w in enumerate(words)]
+
+
+async def _llm_answer(
+    query: str,
+    chunks: list[RetrievedChunk],
+    citations: list[CitationOut],
+    history: list[dict[str, str]] | None = None,
+) -> tuple[str, list[CitationOut]]:
+    answer = (
+        await post_chat_completion(
+            {
                 "model": settings.chat_model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": f"Query: {query}\n\nSources:\n{context}"},
-                ],
+                "messages": _build_chat_messages(query, chunks, history),
                 "temperature": 0.2,
+                # Bound the completion. Without it some gateways bill the
+                # request at the model's full output ceiling (e.g. 131k tokens
+                # for MiniMax M3 on OpenRouter), which a zero-credit account
+                # cannot afford — the request is rejected with 402 before a
+                # single token is generated ("requires more credits, or fewer
+                # max_tokens"). For glm-5.3-flash it also keeps the always-on
+                # reasoning tokens from squeezing out the visible answer.
+                "max_tokens": 1024,
             },
             timeout=60,
         )
-        resp.raise_for_status()
-        answer = resp.json()["choices"][0]["message"]["content"]
+    )["choices"][0]["message"]["content"]
     return answer, citations
+
+
+async def generate_answer_stream(
+    query: str,
+    chunks: list[RetrievedChunk],
+    history: list[dict[str, str]] | None = None,
+):
+    """Stream a source-cited answer as {"type": ...} events.
+
+    Yields ``{"type": "delta", "text": str}`` per provider token and a final
+    ``{"type": "citations", "citations": list[CitationOut]}``. Grounding is
+    identical to :func:`generate_answer` (shared ``_build_chat_messages``). A
+    provider failure BEFORE the first token degrades to the extractive answer
+    (logged, never silent); a mid-stream failure propagates so the SSE layer
+    can emit an explicit ``error`` event for the partial answer.
+    """
+    citations = [build_citation(c, i) for i, c in enumerate(chunks)]
+
+    if not chunks:
+        yield {
+            "type": "delta",
+            "text": (
+                "I could not find supporting material in the committed documents "
+                "for that query. Please try rephrasing, or ingest and commit "
+                "relevant reports first."
+            ),
+        }
+        yield {"type": "citations", "citations": []}
+        return
+
+    if not settings.chat_api_key_effective:
+        logger.warning("no chat API key configured — using extractive answer fallback")
+        for delta in _word_deltas(_extractive_answer(query, chunks)):
+            yield {"type": "delta", "text": delta}
+        yield {"type": "citations", "citations": citations}
+        return
+
+    emitted = False
+    try:
+        async for delta in stream_chat_completion(
+            {
+                "model": settings.chat_model,
+                "messages": _build_chat_messages(query, chunks, history),
+                "temperature": 0.2,
+                # Bound the completion. Without it some gateways bill the
+                # request at the model's full output ceiling (e.g. 131k tokens
+                # for MiniMax M3 on OpenRouter), which a zero-credit account
+                # cannot afford — the request is rejected with 402 before a
+                # single token is generated ("requires more credits, or fewer
+                # max_tokens"). For glm-5.3-flash it also keeps the always-on
+                # reasoning tokens from squeezing out the visible answer.
+                "max_tokens": 1024,
+            },
+            timeout=60,
+        ):
+            emitted = True
+            yield {"type": "delta", "text": delta}
+    except Exception:
+        if emitted:
+            # Mid-stream failure: partial answer is already visible to the
+            # user; let chat.py persist it and surface an explicit SSE error.
+            raise
+        logger.exception(
+            "LLM answer generation failed — falling back to extractive answer"
+        )
+        for delta in _word_deltas(_extractive_answer(query, chunks)):
+            yield {"type": "delta", "text": delta}
+    yield {"type": "citations", "citations": citations}

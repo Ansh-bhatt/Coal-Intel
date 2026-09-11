@@ -1,5 +1,7 @@
 """Draft endpoints: generate + export."""
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -57,7 +59,10 @@ async def generate_draft(
     current_user: User = Depends(get_current_user),
 ):
     """Generate a parliamentary draft from a chat session."""
-    session = await db.get(ChatSession, payload.session_id)
+    # DraftCreate.session_id arrives as a validated UUID (schema) — normalise
+    # to the string form the UUID(as_uuid=False) model columns expect.
+    session_id = str(payload.session_id)
+    session = await db.get(ChatSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")
     if session.user_id != current_user.id:
@@ -66,7 +71,7 @@ async def generate_draft(
         )
 
     try:
-        draft = await compose_draft(db, payload.session_id, current_user.id)
+        draft = await compose_draft(db, session_id, current_user.id)
     except ValueError as exc:
         # compose_draft signals missing sessions / empty transcripts / no
         # assistant reply with ValueError — surface them as 4xx instead of
@@ -79,7 +84,7 @@ async def generate_draft(
         (
             await db.execute(
                 select(ChatMessage)
-                .where(ChatMessage.session_id == payload.session_id)
+                .where(ChatMessage.session_id == session_id)
                 .order_by(ChatMessage.created_at)
             )
         )
@@ -106,12 +111,12 @@ def _export_filename(title: str, extension: str) -> str:
 
 @router.get("/{draft_id}/export")
 async def export_draft(
-    draft_id: str,
+    draft_id: UUID,
     format: str = "pdf",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    draft = await db.get(Draft, draft_id)
+    draft = await db.get(Draft, str(draft_id))
     if draft is None:
         raise HTTPException(status_code=404, detail="Draft not found")
 

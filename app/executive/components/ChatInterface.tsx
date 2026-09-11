@@ -134,10 +134,12 @@ export default function ChatInterface() {
           try {
             await streamChat(retryPayload, handlers, ctrl.signal);
             return;
-          } catch {
+          } catch (retryErr) {
             setStreaming(false);
             setStreamError(
-              "The response engine could not be reached. Check the API server and try again.",
+              retryErr instanceof ApiError
+                ? retryErr.message
+                : "The response engine could not be reached. Check the API server and try again.",
             );
             return;
           }
@@ -151,8 +153,11 @@ export default function ChatInterface() {
           return;
         }
         setStreaming(false);
+        // Surface the backend's actual reason instead of a generic banner.
         setStreamError(
-          "The response engine could not be reached. Check the API server and try again.",
+          err instanceof ApiError
+            ? err.message
+            : "The response engine could not be reached. Check the API server and try again.",
         );
       }
     },
@@ -257,7 +262,7 @@ export default function ChatInterface() {
         </form>
         <p className="mt-2 flex items-center justify-center gap-1 font-mono text-[9px] text-ink/35">
           <CornerDownLeft className="h-3 w-3" /> Enter to send · Shift+Enter for a
-          new line · answers are source-cited
+          new line
         </p>
       </div>
     </div>

@@ -1,8 +1,11 @@
 """Chat endpoints: SSE streaming chat, session management."""
 
 import json
+import logging
+import time
 import uuid
 from datetime import datetime, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -20,9 +23,34 @@ from app.schemas.chat import (
     CitationOut,
     BoundingBox,
 )
-from app.services.rag_service import generate_answer, retrieve
+from app.services.rag_service import generate_answer_stream, retrieve
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+async def _load_history(
+    db: AsyncSession, session_id: str, limit: int = 10
+) -> list[dict[str, str]]:
+    """Recent transcript turns (oldest→newest) for conversation continuity."""
+    rows = (
+        (
+            await db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {"role": m.role, "content": m.content}
+        for m in reversed(rows)
+        if m.role in ("user", "assistant") and m.content
+    ]
 
 
 async def _stream_answer(
@@ -34,6 +62,12 @@ async def _stream_answer(
     fiscal_year: str | None = None,
 ):
     """SSE generator: yields token events and a final citations event."""
+    # Conversation memory: recent transcript (oldest→newest) so follow-up
+    # questions can resolve references like "it" or "that block". Loaded
+    # before the new user message is written so it is not duplicated.
+    history = await _load_history(db, session_id)
+    logger.info("chat history: %d prior turn(s) for session %s", len(history), session_id)
+
     # Persist the user message.
     msg = ChatMessage(
         session_id=session_id, role="user", content=query,
@@ -43,41 +77,85 @@ async def _stream_answer(
     await db.commit()
     await db.refresh(msg)
 
-    # Retrieve + generate.
+    # Retrieve + generate. The LLM is consumed as a true token stream so the
+    # first SSE token lands in ~1-2s (provider TTFT) instead of after the
+    # whole completion — a slow provider previously starved the UI's 30s
+    # first-token watchdog even though the stream was alive.
+    t0 = time.monotonic()
     chunks = await retrieve(db, query, subsidiary=subsidiary, coalfield=coalfield, fiscal_year=fiscal_year)
-    answer, citations = await generate_answer(query, chunks)
-
-    # Persist the assistant message.
-    assist = ChatMessage(
-        session_id=session_id, role="assistant", content=answer,
-        created_at=datetime.now(timezone.utc),
+    logger.info(
+        "chat stream start session=%s chunks=%d retrieve=%.1fs",
+        session_id, len(chunks), time.monotonic() - t0,
     )
-    db.add(assist)
-    await db.commit()
-    await db.refresh(assist)
 
-    # Persist citations (real rows — previously a no-op stub, so drafts and
-    # history lost all source traceability).
-    for c in citations:
-        db.add(
-            ChatCitation(
-                message_id=assist.id,
-                document_id=c.documentId,
-                page_number=c.pageNumber,
-                bbox_x1=int(c.boundingBox.x1),
-                bbox_y1=int(c.boundingBox.y1),
-                bbox_x2=int(c.boundingBox.x2),
-                bbox_y2=int(c.boundingBox.y2),
-            )
+    parts: list[str] = []
+    citations: list[CitationOut] = []
+    ttft: float | None = None
+    failure: str | None = None
+    try:
+        async for event in generate_answer_stream(query, chunks, history=history):
+            if event["type"] == "delta":
+                if ttft is None:
+                    ttft = time.monotonic() - t0
+                parts.append(event["text"])
+                yield {"event": "token", "data": json.dumps({"token": event["text"]})}
+            elif event["type"] == "citations":
+                citations = event["citations"]
+    except Exception:  # noqa: BLE001 — surfaced to the client as an SSE error event
+        logger.exception("chat stream failed session=%s", session_id)
+        failure = (
+            "The query engine was interrupted while answering. What is shown "
+            "may be incomplete — please try again."
         )
-    await db.commit()
 
-    # Stream tokens.
-    words = answer.split(" ")
-    for i, word in enumerate(words):
-        chunk = word + (" " if i < len(words) - 1 else "")
-        yield {"event": "token", "data": json.dumps({"token": chunk})}
+    answer = "".join(parts)
+    if answer:
+        # Persist once the stream ends, keeping the transcript consistent with
+        # what the user actually saw (a mid-stream failure persists the partial
+        # text; a client abort cancels the generator before persistence).
+        assist = ChatMessage(
+            session_id=session_id, role="assistant", content=answer,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(assist)
+        await db.commit()
+        await db.refresh(assist)
 
+        # Persist citations (real rows — previously a no-op stub, so drafts and
+        # history lost all source traceability). Only present on clean streams:
+        # a mid-stream failure never receives the citations event.
+        for c in citations:
+            db.add(
+                ChatCitation(
+                    message_id=assist.id,
+                    document_id=c.documentId,
+                    page_number=c.pageNumber,
+                    bbox_x1=int(c.boundingBox.x1),
+                    bbox_y1=int(c.boundingBox.y1),
+                    bbox_x2=int(c.boundingBox.x2),
+                    bbox_y2=int(c.boundingBox.y2),
+                )
+            )
+        await db.commit()
+    else:
+        assist = None
+
+    if failure is not None:
+        # Explicit error event — the client must never have to guess whether a
+        # closed stream means success.
+        yield {"event": "error", "data": json.dumps({"message": failure})}
+        return
+    if assist is None:
+        yield {
+            "event": "error",
+            "data": json.dumps({"message": "The query engine returned no answer. Please try again."}),
+        }
+        return
+
+    logger.info(
+        "chat stream complete session=%s ttft=%.1fs total=%.1fs chars=%d",
+        session_id, ttft or 0.0, time.monotonic() - t0, len(answer),
+    )
     yield {"event": "citations", "data": json.dumps([c.model_dump() for c in citations])}
     yield {"event": "done", "data": json.dumps({"message_id": assist.id, "session_id": session_id})}
 
@@ -89,7 +167,9 @@ async def chat(
     current_user: User = Depends(get_current_user),
 ):
     """POST /api/v1/chat returns an SSE stream of tokens + citations."""
-    session_id = payload.session_id or str(uuid.uuid4())
+    # payload.session_id is a validated UUID (ChatRequest) — normalise to the
+    # string form the UUID(as_uuid=False) model columns expect.
+    session_id = str(payload.session_id) if payload.session_id else str(uuid.uuid4())
 
     # Create or verify session.
     if payload.session_id is None:
@@ -150,11 +230,13 @@ async def list_sessions(
 
 @router.get("/sessions/{session_id}/messages", response_model=list[ChatHistoryMessage])
 async def get_session_messages(
-    session_id: str,
+    # Path UUID: a garbage id now yields a clean 422 instead of a DB 500.
+    session_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Return the transcript of a chat session (owner-only)."""
+    session_id = str(session_id)  # models use UUID(as_uuid=False) strings
     session = await db.get(ChatSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Chat session not found")

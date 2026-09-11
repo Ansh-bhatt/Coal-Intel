@@ -1,6 +1,8 @@
 """Chat / RAG schemas — mirror lib/types.ts Citation + ChatMessage."""
 
-from pydantic import BaseModel, ConfigDict
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BoundingBox(BaseModel):
@@ -21,11 +23,35 @@ class CitationOut(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
-    session_id: str | None = None
-    subsidiary: str | None = None
-    coalfield: str | None = None
-    fiscal_year: str | None = None
+    """POST /chat body.
+
+    ``session_id`` is a validated UUID: the Swagger "Try it out" panel
+    prefills string fields with the literal placeholder ``"string"``, which
+    used to reach asyncpg's UUID codec and surface as an unhandled 500. The
+    model-level example gives /docs a valid prefilled body out of the box.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message": "Tell about coal status",
+                "session_id": None,
+                "subsidiary": None,
+                "coalfield": None,
+                "fiscal_year": None,
+            }
+        }
+    )
+
+    message: str = Field(min_length=1, examples=["Tell about coal status"])
+    session_id: UUID | None = Field(
+        default=None,
+        examples=["3fa85f64-5717-4562-b3fc-2c963f66afa6"],
+        description="Existing chat session (omit to start a new one).",
+    )
+    subsidiary: str | None = Field(default=None, examples=["NCL"])
+    coalfield: str | None = Field(default=None, examples=["Singrauli"])
+    fiscal_year: str | None = Field(default=None, examples=["2024-25"])
 
 
 class ChatSessionOut(BaseModel):

@@ -14,6 +14,33 @@ import {
 import { getRecords, isNetworkError, updateDocumentMetadata, ApiError } from "@/lib/api";
 import type { ExtractedRecord } from "@/lib/types";
 
+/**
+ * Extraction runs asynchronously on the backend (the upload queued the
+ * worker), so a single GET right after the metadata PATCH races it and often
+ * returns an empty grid. Poll the records endpoint until rows appear — or
+ * give up after ~15s and report 0 records (a legitimately empty extraction).
+ */
+const RECORD_POLL_ATTEMPTS = 12;
+const RECORD_POLL_INTERVAL_MS = 1250;
+
+async function pollRecords(documentId: string): Promise<ExtractedRecord[]> {
+  let sawResponse = false;
+  for (let attempt = 0; attempt < RECORD_POLL_ATTEMPTS; attempt++) {
+    try {
+      const records = (await getRecords(documentId)) as ExtractedRecord[];
+      sawResponse = true;
+      if (records.length > 0) return records;
+    } catch (err) {
+      // Only treat the backend as "unreachable" (which triggers the caller's
+      // offline-demo fallback) if it never answered at all; a transient
+      // blip mid-poll just delays the next attempt.
+      if (!sawResponse && isNetworkError(err)) throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, RECORD_POLL_INTERVAL_MS));
+  }
+  return [];
+}
+
 export default function MetadataForm() {
   const user = useAuthStore((s) => s.user);
   // Subsidiary users ingest for their own subsidiary only: default (and lock,
@@ -37,23 +64,30 @@ export default function MetadataForm() {
   const extractedRecords = usePortalStore((s) => s.extractedRecords);
   const setExtractedRecords = usePortalStore((s) => s.setExtractedRecords);
   const [notice, setNotice] = useState<string | null>(null);
+  const [extracting, setExtracting] = useState(false);
 
   const verifiedCount = uploadedFiles.filter((f) => f.status === "verified").length;
 
   const handleExtract = async () => {
-    const verified = uploadedFiles.find((f) => f.status === "verified" && f.documentId);
-    if (!verified) {
-      setNotice("Wait for at least one staged document to finish processing.");
+    // Same selection rule as the verification grid's commit: the first staged
+    // upload with a backend document id (skips errored rows).
+    const target = uploadedFiles.find((f) => f.documentId && f.status !== "error");
+    if (!target?.documentId) {
+      setNotice("Stage a document first — the upload must finish before extraction can run.");
       return;
     }
+    setExtracting(true);
+    setNotice(null);
     try {
-      await updateDocumentMetadata(verified.documentId!, {
+      await updateDocumentMetadata(target.documentId, {
         subsidiary,
         coalfield,
         category,
         fiscal_year: fiscalYear,
       });
-      const records = await getRecords(verified.documentId!);
+      // Poll until the worker persists records instead of racing it with a
+      // single fetch that often returned an empty grid.
+      const records = await pollRecords(target.documentId);
       setExtractedRecords(records as ExtractedRecord[]);
       setNotice(`Extraction complete — ${records.length} records staged for review.`);
     } catch (err) {
@@ -69,6 +103,8 @@ export default function MetadataForm() {
       } else {
         setNotice("Extraction failed unexpectedly — see the browser console.");
       }
+    } finally {
+      setExtracting(false);
     }
   };
 
@@ -117,10 +153,10 @@ export default function MetadataForm() {
       <button
         onClick={handleExtract}
         className="btn-pill w-full"
-        disabled={uploadedFiles.length === 0}
+        disabled={uploadedFiles.length === 0 || extracting}
       >
-        <ScanLine className="h-4 w-4" />
-        Run extraction
+        <ScanLine className={`h-4 w-4 ${extracting ? "animate-pulse" : ""}`} />
+        {extracting ? "Extracting… polling records" : "Run extraction"}
       </button>
 
       {notice && (

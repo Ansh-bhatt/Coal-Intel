@@ -3,10 +3,11 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.documents import _get_scoped_document
+from app.core.config import get_settings
 from app.core.deps import get_current_user, get_db
 from app.models.extraction import ExtractedRecord
 from app.models.user import User
@@ -107,22 +108,43 @@ async def commit_document(
             status_code=400, detail="Document must be in 'verified' status to commit"
         )
 
-    # Check all flagged records are resolved.
+    # Flagged records must be resolved before commit. With HITL_AUTO_RESOLVE
+    # enabled (prototype default) the commit auto-accepts them in bulk: the
+    # extracted value becomes the accepted value (kept in corrected_value),
+    # every flip is audited, and the commit proceeds. Set
+    # HITL_AUTO_RESOLVE=false for strict human-in-the-loop behaviour.
+    settings = get_settings()
     flagged = (
         (
             await db.execute(
-                select(func.count()).where(
+                select(ExtractedRecord).where(
                     ExtractedRecord.document_id == document_id,
                     ExtractedRecord.status == "flagged",
                 )
             )
         )
-        .scalar_one()
+        .scalars()
+        .all()
     )
-    if flagged > 0:
+    if flagged and not settings.hitl_auto_resolve:
         raise HTTPException(
             status_code=400,
-            detail=f"{flagged} flagged records must be corrected before commit",
+            detail=f"{len(flagged)} flagged records must be corrected before commit",
+        )
+    for record in flagged:
+        record.corrected_value = record.value
+        record.corrected_by = current_user.id
+        record.corrected_at = datetime.now(timezone.utc)
+        record.status = "corrected"
+        db.add(
+            AuditLog(
+                actor_id=current_user.id,
+                action="record.auto_resolve",
+                entity_type="extracted_record",
+                entity_id=record.id,
+                before_value={"value": record.value, "status": "flagged"},
+                after_value={"value": record.value, "status": "corrected"},
+            )
         )
 
     doc.status = "committed"

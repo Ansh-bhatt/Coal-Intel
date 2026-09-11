@@ -156,7 +156,7 @@ export default function ReportStudio() {
           Report builder
         </h3>
         <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.18em] text-ink/40">
-          M1 · automated report generation · every claim cited
+          Automated report generation — every claim is cited to its source page
         </p>
 
         {/* 1 — report type */}

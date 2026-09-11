@@ -4,7 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Upload } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
 import { cn } from "@/lib/utils";
-import { commitDocument, isNetworkError, updateRecord } from "@/lib/api";
+import {
+  commitDocument,
+  getRecords,
+  isNetworkError,
+  updateRecord,
+} from "@/lib/api";
 import type { ExtractedRecord } from "@/lib/types";
 
 const THRESHOLD = 0.85;
@@ -17,6 +22,7 @@ export default function VerificationGrid() {
   const uploadedFiles = usePortalStore((s) => s.uploadedFiles);
   const updateLocalRecord = usePortalStore((s) => s.updateRecord);
   const markAllVerified = usePortalStore((s) => s.markAllVerified);
+  const setExtractedRecords = usePortalStore((s) => s.setExtractedRecords);
   const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
 
   const [committing, setCommitting] = useState(false);
@@ -43,6 +49,9 @@ export default function VerificationGrid() {
       ? (records.reduce((a, r) => a + r.confidence, 0) / records.length * 100).toFixed(1)
       : "—";
   const allVerified = records.length > 0 && verifiedCount === records.length;
+  // The document this grid's records belong to — the first staged upload with
+  // a backend id (the same selection MetadataForm extracted from).
+  const docId = uploadedFiles.find((f) => f.documentId && f.status !== "error")?.documentId;
 
   const handleLocalUpdate = (id: string, patch: Partial<ExtractedRecord>) => {
     const value = patch.value;
@@ -69,7 +78,11 @@ export default function VerificationGrid() {
   };
 
   const handleCommit = async () => {
-    const doc = uploadedFiles.find((f) => f.documentId && f.status === "verified");
+    // Commit the document whose records are staged in this grid — the first
+    // staged file with a backend id, which is the exact selection MetadataForm
+    // extracted from. The other staged uploads are committed through their own
+    // review pass, never implicitly by this button.
+    const doc = uploadedFiles.find((f) => f.documentId && f.status !== "error");
     if (!doc?.documentId) return;
     setCommitting(true);
     setCommitError(null);
@@ -82,6 +95,15 @@ export default function VerificationGrid() {
       markAllVerified();
       updateFileStatus(doc.id, "committed");
       setCommitted(true);
+      // Re-sync statuses from the server: flagged rows were auto-accepted by
+      // HITL_AUTO_RESOLVE during the commit (or the request would have 400'd),
+      // so the backend is the source of truth for what actually got committed.
+      try {
+        const fresh = await getRecords(doc.documentId);
+        setExtractedRecords(fresh as ExtractedRecord[]);
+      } catch {
+        /* refetch is best-effort — keep the locally-verified statuses */
+      }
     } catch (err) {
       if (isNetworkError(err)) {
         // Backend unreachable → keep the flow demoable offline.
@@ -169,15 +191,17 @@ export default function VerificationGrid() {
         </div>
         <button
           onClick={handleCommit}
-          disabled={committing || committed || allVerified}
+          disabled={committing || committed || !docId}
           className="btn-pill !px-4 !py-2 !text-xs"
         >
           <CheckCircle2 className="h-3.5 w-3.5" />
-          {committed || allVerified
+          {committed
             ? "Batch committed"
             : committing
               ? "Committing…"
-              : "Commit batch"}
+              : allVerified
+                ? "Commit batch"
+                : "Commit batch (auto-accepts flagged)"}
         </button>
       </div>
     </div>

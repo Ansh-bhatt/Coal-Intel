@@ -1,14 +1,17 @@
 """Text extraction for uploaded documents.
 
-Extracts per-page text (PDF) or structured key-value rows (XLSX/DOCX) and
-turns them into raw ``ExtractedRecord`` rows with confidence scores.
+Extracts per-page text (PDF/TXT/images), structured key-value rows
+(XLSX/DOCX/CSV) and turns them into raw ``ExtractedRecord`` rows with
+confidence scores.
 
-PDF text extraction uses the embedded text layer (pypdf).  Scanned PDFs
-would need an OCR step — the ``extract_pdf_text`` function is the single
-swap point for a real OCR/document-AI service, keeping the abstraction
-required by the PRD.
+PDF text extraction uses the embedded text layer (pypdf). Pages that arrive
+as images (PNG/JPG — scanned reports, map legends, handwritten logs) are
+OCR'd through the configured multimodal chat provider (see
+services/ocr_service.py); ``extract_document`` stays the sync entrypoint and
+``extract_document_async`` is the async dispatcher the worker uses.
 """
 
+import csv
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -163,6 +166,41 @@ def _extract_records_from_docx(path: Path) -> list[dict]:
     return records
 
 
+# Image uploads are OCR'd through the chat provider (services/ocr_service.py).
+IMAGE_TYPES = {"png", "jpg", "jpeg", "webp", "bmp"}
+
+
+def _extract_records_from_csv(path: Path) -> list[dict]:
+    """One record per CSV row: key = first column, value = second."""
+    records: list[dict] = []
+    with path.open(newline="", encoding="utf-8-sig") as fh:
+        for row in csv.reader(fh):
+            cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+            if len(cells) < 2:
+                continue
+            records.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "key": cells[0],
+                    "value": cells[1],
+                    "confidence": 0.97,
+                }
+            )
+    return records
+
+
+def _extract_text_pages(path: Path) -> list[ExtractedPage]:
+    """Read a TXT file as a single page for the key-value heuristic."""
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    return [
+        ExtractedPage(
+            page_number=1,
+            text=raw.strip(),
+            confidence=_estimate_confidence(raw),
+        )
+    ]
+
+
 def extract_document(path: Path, file_type: str) -> ExtractionResult:
     """Dispatch to the right extractor based on file type."""
     file_type = file_type.lower()
@@ -176,7 +214,24 @@ def extract_document(path: Path, file_type: str) -> ExtractionResult:
         return ExtractionResult(pages=[], records=_extract_records_from_workbook(path))
     if file_type in ("docx", "doc"):
         return ExtractionResult(pages=[], records=_extract_records_from_docx(path))
+    if file_type == "csv":
+        return ExtractionResult(pages=[], records=_extract_records_from_csv(path))
+    if file_type == "txt":
+        pages = _extract_text_pages(path)
+        records = _extract_records_from_page(pages[0]) if pages else []
+        return ExtractionResult(pages=pages, records=records)
     raise ValueError(f"Unsupported file type: {file_type}")
+
+
+async def extract_document_async(path: Path, file_type: str) -> ExtractionResult:
+    """Async dispatch: images OCR via the chat provider, the rest stay sync."""
+    if file_type.lower() in IMAGE_TYPES:
+        # Imported here to keep the module graph acyclic (ocr_service imports
+        # this module's dataclasses at module level).
+        from app.services.ocr_service import ocr_image
+
+        return await ocr_image(path, file_type)
+    return extract_document(path, file_type)
 
 
 def compute_status(confidence: float) -> str:

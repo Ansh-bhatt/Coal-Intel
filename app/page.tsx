@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
-  Activity,
   ArrowRight,
   BarChart3,
   Database,
@@ -19,17 +18,12 @@ import { getMetrics, type AnalyticsMetrics } from "@/lib/api";
 /**
  * Landing metrics strip. When the API answers (i.e. a signed-in visitor with a
  * stored token), the counts come straight from GET /analytics/metrics and the
- * latency is the measured round-trip. Otherwise the strip falls back to a
- * simulated ticker and says so — an invented number is never shown as measured.
+ * latency is the measured round-trip. Otherwise every cell shows an em dash —
+ * an invented number is never displayed as measured.
  */
 function LiveMetrics() {
   const [metrics, setMetrics] = useState<AnalyticsMetrics | null>(null);
   const [latency, setLatency] = useState<number | null>(null);
-  const [sim, setSim] = useState({
-    latency: 128,
-    documents: 148_203,
-    citations: 12_847,
-  });
 
   useEffect(() => {
     let cancelled = false;
@@ -48,17 +42,6 @@ function LiveMetrics() {
     };
   }, []);
 
-  useEffect(() => {
-    const t = setInterval(() => {
-      setSim((m) => ({
-        latency: Math.max(80, Math.round(m.latency + (Math.random() * 40 - 20))),
-        documents: m.documents + Math.floor(Math.random() * 3),
-        citations: m.citations + Math.floor(Math.random() * 2),
-      }));
-    }, 2200);
-    return () => clearInterval(t);
-  }, []);
-
   const live = metrics !== null;
   const fmt = (n: number) => n.toLocaleString("en-IN");
 
@@ -67,17 +50,17 @@ function LiveMetrics() {
       <dl className="grid grid-cols-3 divide-x divide-black/10 rounded-2xl border border-black/10 bg-white/60 backdrop-blur-sm">
         {[
           {
-            label: "ENGINE LATENCY",
-            value: `${live && latency != null ? latency : sim.latency}ms`,
+            label: "API LATENCY",
+            value: live && latency != null ? `${latency}ms` : "—",
             accent: true,
           },
           {
             label: "DOCS INGESTED",
-            value: live ? fmt(metrics.total_documents) : fmt(sim.documents),
+            value: live ? fmt(metrics.total_documents) : "—",
           },
           {
             label: "RECORDS VERIFIED",
-            value: live ? fmt(metrics.verified_records) : fmt(sim.citations),
+            value: live ? fmt(metrics.verified_records) : "—",
           },
         ].map((item) => (
           <div key={item.label} className="px-5 py-4">
@@ -96,7 +79,7 @@ function LiveMetrics() {
         ))}
       </dl>
       <p className="mt-1.5 text-right font-mono text-[9px] uppercase tracking-[0.18em] text-ink/40">
-        {live ? "measured from the live corpus" : "simulated — sign in for live counts"}
+        {live ? "measured from the live corpus" : "sign in for live counts"}
       </p>
     </div>
   );
@@ -128,10 +111,10 @@ export default function LandingPage() {
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
               </span>
-              V2.4 ENGINE LIVE
+              RAG ENGINE LIVE → DOCUMENT INTELLIGENCE ENGINE
             </span>
             <span className="hidden items-center gap-1.5 rounded-full border border-black/10 bg-white/60 px-3 py-1 font-mono text-[11px] text-ink/70 sm:inline-flex">
-              <Radio className="h-3.5 w-3.5" /> KOLKATA · CMPDI
+              <Radio className="h-3.5 w-3.5" /> DELHI · CMPDI
             </span>
           </div>
         </div>
@@ -326,9 +309,8 @@ export default function LandingPage() {
             © 2024 Coal India Limited · CMPDI — Internal use only
           </p>
           <p className="flex items-center gap-2 font-mono text-[11px] text-ink/50">
-            <ScanText className="h-3.5 w-3.5" /> OCR pipeline healthy
-            <span className="inline-flex h-1.5 w-1.5 animate-pulse-dot rounded-full bg-emerald-500" />
-            <Activity className="ml-2 h-3.5 w-3.5" /> All systems operational
+            <ScanText className="h-3.5 w-3.5" /> Coal-Intel · document
+            intelligence platform
           </p>
         </footer>
       </main>

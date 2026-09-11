@@ -237,14 +237,18 @@ export async function streamChat(payload: ChatRequest, handlers: ChatStreamHandl
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let doneSeen = false;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split("\n\n");
+    // SSE lines are CRLF (sse-starlette sends \r\n) — split on /\r?\n\r?\n/ so
+    // both LF and CRLF streams parse. A boundary split across read chunks
+    // stays in the buffer tail (blocks.pop) until it is complete.
+    const blocks = buffer.split(/\r?\n\r?\n/);
     buffer = blocks.pop() ?? "";
     for (const block of blocks) {
-      const lines = block.split("\n");
+      const lines = block.split(/\r?\n/);
       let event = "message";
       const dataLines: string[] = [];
       for (const line of lines) {
@@ -253,16 +257,25 @@ export async function streamChat(payload: ChatRequest, handlers: ChatStreamHandl
       }
       const data = dataLines.join("\n");
       if (!data) continue;
+      let streamError: string | null = null;
       try {
         if (event === "token") handlers.onToken(JSON.parse(data).token);
         else if (event === "citations") handlers.onCitations(JSON.parse(data));
         else if (event === "done") {
+          doneSeen = true;
           const done = JSON.parse(data);
           handlers.onDone(done.message_id, done.session_id);
+        } else if (event === "error") {
+          // Backend explicitly reports a mid-stream failure — never silent.
+          try { streamError = JSON.parse(data).message ?? "Query engine error."; } catch { streamError = "Query engine error."; }
         }
       } catch { /* skip malformed event */ }
+      if (streamError) throw new ApiError(502, streamError);
     }
   }
+  // A stream that ends without `done` is a failure, not a quiet success —
+  // otherwise the composer would recover with a truncated/empty answer.
+  if (!doneSeen) throw new ApiError(502, "The response stream closed before the answer finished.");
 }
 export interface AnalyticsMetrics { total_documents: number; committed_documents: number; total_records: number; verified_records: number; average_confidence: number | null; extraction_accuracy: number | null; total_chunks: number; }
 export async function getMetrics(): Promise<AnalyticsMetrics> { return apiRequest<AnalyticsMetrics>("/analytics/metrics"); }

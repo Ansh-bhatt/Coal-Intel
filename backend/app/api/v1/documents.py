@@ -26,7 +26,9 @@ from app.workers.extraction_worker import run_extraction
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 settings = get_settings()
-ALLOWED_TYPES = {"pdf", "xlsx", "docx"}
+ALLOWED_TYPES = {
+    "pdf", "xlsx", "docx", "csv", "txt", "png", "jpg", "jpeg", "webp", "bmp",
+}
 
 
 def _to_out(doc: Document) -> DocumentOut:
@@ -153,5 +155,16 @@ async def stream_document_file(document_id: str, db: AsyncSession = Depends(get_
     path = Path(settings.storage_dir) / doc.storage_path
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    media_type = {"pdf": "application/pdf", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}.get(doc.file_type, "application/octet-stream")
+    media_type = {
+        "pdf": "application/pdf",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "csv": "text/csv",
+        "txt": "text/plain",
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+        "bmp": "image/bmp",
+    }.get(doc.file_type, "application/octet-stream")
     return FileResponse(path, media_type=media_type, filename=doc.file_name)

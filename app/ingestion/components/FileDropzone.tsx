@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import { useDropzone } from "react-dropzone";
 import {
   CheckCircle2,
@@ -11,24 +11,34 @@ import {
 } from "lucide-react";
 import { usePortalStore } from "@/store/portalStore";
 import { cn, formatBytes } from "@/lib/utils";
-import { ApiError, uploadDocument } from "@/lib/api";
+import { ApiError, getDocument, uploadDocument } from "@/lib/api";
 import type { UploadedFileEntry } from "@/lib/types";
 
-// Mirrors backend ALLOWED_TYPES ({pdf, xlsx, docx}) — the dropzone previously
-// advertised .doc/.csv too, which the backend always rejected with 400.
+// Mirrors the backend ALLOWED_TYPES (documents.py): pdf, xlsx, docx, csv, txt
+// and the image types handled by the OCR fallback extractor.
 const ACCEPT = {
   "application/pdf": [".pdf"],
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
     ".docx",
   ],
+  "text/csv": [".csv"],
+  "text/plain": [".txt"],
+  "image/png": [".png"],
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/webp": [".webp"],
+  "image/bmp": [".bmp"],
 };
+
+/** How often a staged row re-checks the backend document status. */
+const POLL_INTERVAL_MS = 1500;
 
 export default function FileDropzone() {
   const uploadedFiles = usePortalStore((s) => s.uploadedFiles);
   const addFiles = usePortalStore((s) => s.addFiles);
   const removeFile = usePortalStore((s) => s.removeFile);
   const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
+  const setFileProgress = usePortalStore((s) => s.setFileProgress);
   const setFileDocumentId = usePortalStore((s) => s.setFileDocumentId);
   const setFileError = usePortalStore((s) => s.setFileError);
 
@@ -39,14 +49,20 @@ export default function FileDropzone() {
       // created entries — matching later by filename collides when two files
       // share a name.
       const entries = addFiles(accepted);
-      // Upload each file to the backend.
+      // Upload each file to the backend, reporting real XHR progress.
       for (const entry of entries) {
         const file = entry.file;
         try {
-          const result = await uploadDocument(file);
-          // Update the entry with the backend document ID + verified status.
+          const result = await uploadDocument(file, (pct) =>
+            setFileProgress(entry.id, pct),
+          );
+          // The upload response means the file is stored and the extraction
+          // worker is queued — mirror that lifecycle. The row then polls
+          // GET /documents/{id} until extraction finishes (see FileRow);
+          // marking "verified" here would fake a state the backend hasn't
+          // reached yet.
           setFileDocumentId(entry.id, result.document_id);
-          updateFileStatus(entry.id, "verified");
+          updateFileStatus(entry.id, "processing");
         } catch (err) {
           // Surface the real failure (e.g. 401 Unauthorized) instead of silently
           // swallowing it — log it and stash the message on the file entry so the
@@ -59,7 +75,7 @@ export default function FileDropzone() {
         }
       }
     },
-    [addFiles, setFileDocumentId, setFileError, updateFileStatus],
+    [addFiles, setFileDocumentId, setFileError, setFileProgress, updateFileStatus],
   );
 
   const { getRootProps, getInputProps, isDragActive, fileRejections } =
@@ -97,14 +113,15 @@ export default function FileDropzone() {
             {isDragActive ? "Release to stage documents" : "Drag & drop documents"}
           </p>
           <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-ink/50">
-            .pdf · .xlsx · .docx — or click to browse
+            .pdf · .xlsx · .docx · .csv · .txt · images — or click to browse
           </p>
         </div>
       </div>
 
       {fileRejections.length > 0 && (
         <p className="mt-2 rounded-lg border border-rose-500 bg-rose-500/10 px-3 py-1.5 font-mono text-[10px] text-rose-600">
-          Unsupported file type — only PDF, XLSX and DOCX are accepted.
+          Unsupported file type — only PDF, XLSX, DOCX, CSV, TXT and images are
+          accepted.
         </p>
       )}
 
@@ -122,15 +139,15 @@ export default function FileDropzone() {
 
       {uploadedFiles.length === 0 && (
         <p className="mt-4 flex items-center gap-1.5 font-mono text-[9px] text-ink/35">
-          <FileText className="h-3 w-3" /> Files are staged locally — nothing is
-          transmitted to a backend in this demo build.
+          <FileText className="h-3 w-3" /> Staged files upload to the backend and
+          extract automatically — then tag metadata and review the grid.
         </p>
       )}
     </div>
   );
 }
 
-/** Individual staged-file row with simulated processing progress. */
+/** Individual staged-file row with real upload progress + extraction polling. */
 function FileRow({
   entry,
   onRemove,
@@ -139,27 +156,40 @@ function FileRow({
   onRemove: (id: string) => void;
 }) {
   const updateFileStatus = usePortalStore((s) => s.updateFileStatus);
-  const [progress, setProgress] = useState(entry.status === "verified" ? 100 : 0);
+  const setFileError = usePortalStore((s) => s.setFileError);
+  // Progress is the real XHR upload percentage; jump to 100 once the backend
+  // confirms extraction finished.
+  const progress =
+    entry.status === "verified" || entry.status === "committed"
+      ? 100
+      : entry.progress;
 
+  // Poll the backend while extraction runs. The upload response only means
+  // "stored + extraction worker queued" — the row flips to verified/error
+  // only when the document actually reaches that state.
   useEffect(() => {
-    if (entry.status !== "queued") return;
-    const start = window.setTimeout(() => {
-      updateFileStatus(entry.id, "processing");
-      const interval = window.setInterval(() => {
-        setProgress((p) => Math.min(100, p + 10 + Math.floor(Math.random() * 15)));
-      }, 130);
-      const finish = window.setTimeout(() => {
-        window.clearInterval(interval);
-        // Don't clobber a terminal state already set by the real upload
-        // (e.g. "error" from a 401 or "verified" from a successful upload).
-        const current = usePortalStore.getState().uploadedFiles.find((f) => f.id === entry.id);
-        if (current?.status === "processing") updateFileStatus(entry.id, "verified");
-      }, 3200);
-      return () => window.clearTimeout(finish);
-    }, 400);
-    return () => window.clearTimeout(start);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry.id, entry.status]);
+    if (entry.status !== "processing" || !entry.documentId) return;
+    let cancelled = false;
+    const timer = window.setInterval(async () => {
+      try {
+        const doc = await getDocument(entry.documentId!);
+        if (cancelled) return;
+        if (doc.status === "verified" || doc.status === "committed") {
+          updateFileStatus(entry.id, "verified");
+        } else if (doc.status === "error") {
+          setFileError(entry.id, "Extraction failed on the backend — remove the file and try again.");
+          updateFileStatus(entry.id, "error");
+        }
+        // "queued"/"processing" → keep polling.
+      } catch {
+        /* transient network/auth hiccup — the next tick retries */
+      }
+    }, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [entry.status, entry.documentId, entry.id, setFileError, updateFileStatus]);
 
   const isVerified = entry.status === "verified";
   const isProcessing = entry.status === "processing";

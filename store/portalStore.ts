@@ -33,6 +33,8 @@ interface PortalState {
    *  collide). */
   addFiles: (files: File[]) => UploadedFileEntry[];
   updateFileStatus: (id: string, status: UploadedFileEntry["status"]) => void;
+  /** Real upload progress (0–100) reported by the XHR in lib/api.ts. */
+  setFileProgress: (id: string, progress: number) => void;
   setFileDocumentId: (id: string, documentId: string) => void;
   setFileError: (id: string, message: string) => void;
   removeFile: (id: string) => void;
@@ -82,6 +84,12 @@ export const usePortalStore = create<PortalState>((set) => ({
     set((state) => ({
       uploadedFiles: state.uploadedFiles.map((f) =>
         f.id === id ? { ...f, status, progress: status === "committed" ? 100 : f.progress } : f,
+      ),
+    })),
+  setFileProgress: (id, progress) =>
+    set((state) => ({
+      uploadedFiles: state.uploadedFiles.map((f) =>
+        f.id === id ? { ...f, progress } : f,
       ),
     })),
   setFileDocumentId: (id, documentId) =>
